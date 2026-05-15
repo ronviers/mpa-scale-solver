@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mpa-scale-solver"
+version = "0.1.0"
+description = "MPA scale-management kernel: tau_obs projection and canonical-frame operations."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "ronviers" }]
+keywords = ["mpa", "scale-management", "rg-flow", "tau_obs"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7",
+    "matplotlib>=3.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/ronviers/mpa-scale-solver"
+Source = "https://github.com/ronviers/mpa-scale-solver"
+
+[tool.setuptools.packages.find]
+include = ["mpa_scale_solver*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

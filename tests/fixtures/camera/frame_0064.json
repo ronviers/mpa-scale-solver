@@ -1,0 +1,9 @@
+{
+  "frame_index": 64,
+  "tau_obs": 17.39828052930364,
+  "analytical_chit": -0.21911003019395103,
+  "numerical_chit": -0.22499999999999964,
+  "residual": -0.005889969806048612,
+  "regime_5bucket": "r_near_s",
+  "regime_display_band": "r"
+}
