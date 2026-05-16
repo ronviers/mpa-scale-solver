@@ -4,7 +4,9 @@ Self-evolving trajectory handoff. v1.0.0 shipped 2026-05-16 (consumed
 end-to-end by mpa-conform v0.2). v2.0.0 shipped 2026-05-16 (BLOCK_IN
 §v2 cut (a) — JAX foundation + differentiability). v2.1.0 shipped
 2026-05-16 (cut (b) — Bayesian inversion via Laplace approximation).
-What remains: v2.2–v2.4 (cuts c–e) → v3 → v4 → v5 → v6.
+What remains: ~~v2.2~~ (premise overturned by framework cross-check —
+see §v2.2), v2.3 (I1–I4 intents), v2.4 (Caputo flow), → v3 → v4 →
+v5 → v6.
 
 This document is the single brief that carries from one session to the
 next. It is **not** a roadmap — sequencing lives in
@@ -46,7 +48,7 @@ always — refine in place).
 | v1 | Continuous flow + Banach + sidecar + per-call validation | — (shipped) |
 | v2.0 | JAX foundation + differentiability (BLOCK_IN cut a) | v1 (shipped) |
 | v2.1 | Bayesian inversion (Laplace around MAP) (cut b) | v2.0 (shipped) |
-| **v2.2** | N-mode generalization (cut c) | v2.0 |
+| ~~v2.2~~ | ~~N-mode generalization~~ — **premise overturned**, see §v2.2 | framework-side decision required |
 | **v2.3** | Full I1–I4 intents + composition algebra (cut d) | v2.0 |
 | **v2.4** | Non-Markovian Caputo flow (β_mem < 1) via Prony (cut e) | v2.0 |
 | **v3** | Cross-substrate operations + active learning + MCP server + learned translation-field form | v2.* (active learning prefers v2.1's posteriors) |
@@ -145,37 +147,77 @@ build on the v2.0/v2.1 surface rather than reinventing it.
   `posterior=True` kwarg on the existing wrapped variant — cleaner
   return-type contract.
 
-### §v2.2 — N-mode generalization (cut c)
+### §v2.2 — N-mode (cut c) — **PREMISE OVERTURNED; reframing required**
 
-**Goal.** Generalize the type pair beyond N=2. Two-mode v0/v1
-fixtures continue to pass; new N=4 fixtures exercise the general path.
+**The v2.2 BLOCK_IN sketch (vector `chit` + matrix `gamma_AB`) is
+misaligned with the framework. Do not implement it as written. See
+the framework-side finding below before proceeding.**
 
-**Capabilities to land.**
+**Framework finding (2026-05-16 cross-repo check):** the
+"two-mode" CanonicalState `(chit, gamma_AB, k_frust)` is **not** a
+2-mode-as-N=2-special-case; it IS the framework's universal canonical
+representation. Authoritative pointers:
 
-- New `CanonicalStateN` dataclass: `chit: tuple[float, ...]`,
-  `gamma_AB: tuple[tuple[float, ...], ...]` (mode-pair coupling
-  matrix), `k_frust: bool`. Parallel type to the existing 2-mode
-  `CanonicalState`; the seven operations' `*_n` variants dispatch
-  on type.
-- JAX PyTree registration for `CanonicalStateN` (leaves: `chit`
-  tuple flattened, `gamma_AB` flattened; aux: `k_frust` + shape).
-- `jax_core` adds N-mode primitives parallel to the 2-mode ones;
-  the 2-mode functions become a special case (N=2 dispatch
-  byte-identical).
+- `mpa-atlas/framework/cdv1_compressed.md` §"Universal two-mode
+  kernel" (line 125) — declares the two-mode kernel as the canonical
+  Character kernel, with the `D[ρ_A, ρ_B; γ_AB]` closure family
+  parameterized by the same `γ_AB`.
+- `mpa-atlas/framework/cdv1_compressed.md` §10 "Four-channel pattern
+  selection architecture" (line 493) — N≥3 substrates do NOT widen
+  the canonical state; they decompose into four closed tests
+  (frustration / spectral-sync SBN / non-reciprocity / active-matter
+  overlay). Quote: *"any N≥3 Character kernel routes through these
+  four tests."*
+- `mpa-atlas/framework/cdv1_compressed.md` line 150 — `k_frust` is
+  explicitly the N≥3 frustration-test outcome bool on the existing
+  CanonicalState. We already store it; we already propagate it
+  through `regime_at` / `intent_map`.
+- `mpa-atlas/framework/cdv1_receipts.md` §9 / §16 / §17 / §18 / §21
+  — every N≥3 result (May–Leonard 3-species, Schnakenberg cycle
+  currents, non-reciprocal kernels, chimera states) composes the
+  two-mode kernel pairwise; no wider state ever appears.
 
-**Acceptance.**
+**What this means for v2.2.** "Generalize CanonicalState to N>2"
+isn't a missing feature — it would contradict the framework's
+design. The 2-mode CanonicalState is the universal canonical form by
+the same logic that makes the seven-operation API the canonical
+surface: thinking of it as "the N=2 case" is the category error.
 
-- v0 + v1 + v2.0 + v2.1 fixtures pass unchanged.
-- New: `test_n_mode.py` — N=2 byte-identical to v1; N=4 round-trip
-  on a synthetic N-mode Banach analog (each mode independently
-  exponentially decaying, cross-couplings = 0).
-- README + CLAUDE.md updated; this §v2.2 deleted.
-- Tagged `v2.2.0`.
+**Two legitimate reframings (pick one; both want a foundational-
+questions entry first per CLAUDE.md no-eighth-operation rule):**
 
-**Open / watch.** Keep the 2-mode `CanonicalState` as the canonical
-shape for the seven-operation API; `CanonicalStateN` is a parallel
-type, not a replacement. The v6 port reads both as distinct types
-with tagged dispatch.
+1. **Cancel v2.2.** Conclude that the framework's universal
+   two-mode CanonicalState is already what v2.2 should produce. Mark
+   cut (c) as not-applicable; renumber the trajectory table; carry
+   on to v2.3 / v2.4. **This is the recommended default unless a
+   substrate has surfaced a concrete N≥3 measurement need that the
+   four-channel tests don't already cover.**
+
+2. **Reframe v2.2 as the four-channel pattern-selection tests.** Add
+   `frustration_test`, `spectral_sync_test`, `non_reciprocity_test`,
+   `active_matter_overlay` as operations that consume **populations
+   of 2-mode CanonicalStates** (a labelled mode-pair graph with a
+   coupling matrix `γ_ij`) and return verdicts on the four channels.
+   These are new operations beyond the seven — each requires a
+   foundational-questions entry per CLAUDE.md. The wider type is
+   `ModePairGraph = list[tuple[ModeId, ModeId, CanonicalState]]`,
+   not a generalized CanonicalState; the four operations sit
+   alongside the existing seven, not inside them.
+
+**Before any code:** spec the N≥3 reading shape with mpa-atlas /
+mpa-central. The driver-profile schema today is open-typed enough
+that no schema bump is forced by either reframing, but
+`mpa-central/SUITE_BLOCK_IN.md` decides where the four-channel
+operations live (scale-solver vs. mpa-conform vs. a new sibling
+focused on multi-mode pattern selection).
+
+**Dependencies.** A foundational-questions entry in
+`H:/mpa-scale-solver/docs/foundational-questions.md` (does not exist
+yet — would be the first; the cross-repo pattern is mpa-auditor /
+mpa-conform's `docs/foundational-questions.md`). Framework-side
+ratification before implementation.
+
+**Acceptance.** Deferred until reframing is settled.
 
 ### §v2.3 — full I1–I4 intents + composition algebra (cut d)
 
