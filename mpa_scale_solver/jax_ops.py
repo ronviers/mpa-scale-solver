@@ -44,6 +44,7 @@ from .jax_core import (
     banach_state,
     caputo_flow,
     laplace_covariance_from_jacobian,
+    learned_field_substrate,
     tangent_flow_canonical,
     tangent_flow_canonical_inverse,
     tangent_flow_substrate,
@@ -51,6 +52,7 @@ from .jax_core import (
 from .types import (
     AnyTranslationField,
     CanonicalState,
+    LearnedField,
     SubstrateState,
     TangentFlowField,
     TranslationField,
@@ -422,6 +424,48 @@ def lookup_table_posterior(
 # ---------------------------------------------------------------------------
 # Banach analytical state — differentiable in (chit_0, gamma_0, lambda_*, nu)
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Learned translation field (v3 — BLOCK_IN §v3): differentiable forward map
+# ---------------------------------------------------------------------------
+
+def _learned_weights_as_jax(field: "LearnedField"):
+    """Convert the nested-tuple weight storage into JAX arrays per layer."""
+    return tuple(
+        (
+            jnp.asarray(W, dtype=jnp.float64),
+            jnp.asarray(b, dtype=jnp.float64),
+        )
+        for W, b in field.weights
+    )
+
+
+def learned_field_substrate_diff(
+    canonical: CanonicalState,
+    field: "LearnedField",
+    tau_obs: float,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Differentiable forward map for a learned translation field.
+
+    Returns `(substrate_chit, substrate_gamma_AB)` as JAX 0-d arrays.
+    Differentiable in `canonical.chit`, `canonical.gamma_AB`, and the
+    MLP weights. The training surface is curator-side (mpa-conform);
+    here the solver evaluates against curator-shipped weights.
+
+    Input vector to the MLP is `(chit, gamma_AB, log(tau / tau_ref))`;
+    output is `(substrate_chit, substrate_gamma_AB)`. The activation is
+    the field's declared activation; the output layer is linear.
+    """
+    weights_jax = _learned_weights_as_jax(field)
+    return learned_field_substrate(
+        chit=jnp.asarray(canonical.chit, dtype=jnp.float64),
+        gamma_AB=jnp.asarray(canonical.gamma_AB, dtype=jnp.float64),
+        tau_obs=jnp.asarray(tau_obs, dtype=jnp.float64),
+        tau_obs_ref=jnp.asarray(field.tau_obs_ref, dtype=jnp.float64),
+        weights=weights_jax,
+        activation=field.activation,
+    )
+
 
 def banach_state_diff(
     substrate: BanachSubstrate,

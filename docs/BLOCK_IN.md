@@ -1,14 +1,16 @@
-# mpa-scale-solver — v3→v6 block-in handoff
+# mpa-scale-solver — v4→v6 block-in handoff
 
-Self-evolving trajectory handoff. v1 + v2 shipped 2026-05-16: v1.0.0
-(continuous flow + Banach + sidecar), v2.0.0 (JAX foundation, cut a),
-v2.1.0 (Bayesian inversion via Laplace, cut b), v2.3.0 (full I1–I5
-intents + composition, cut d), v2.4.0 (non-Markovian Caputo flow via
-Prony, cut e). Cut (c) "N-mode generalization" cancelled 2026-05-16 —
-premise overturned by framework cross-check; the 2-mode CanonicalState
-is the framework's universal canonical representation, not a
-2-mode-as-N=2-special-case (see §v2.2-cancelled tombstone below).
-What remains: v3 → v4 → v5 → v6.
+Self-evolving trajectory handoff. v1, v2, and v3 shipped 2026-05-16:
+v1.0.0 (continuous flow + Banach + sidecar), v2.0.0 (JAX foundation,
+cut a), v2.1.0 (Bayesian inversion via Laplace, cut b), v2.3.0 (full
+I1–I5 intents + composition, cut d), v2.4.0 (non-Markovian Caputo flow
+via Prony, cut e), v3.0.0 (cross-substrate ops + active learning + MCP
+server + LearnedField + per-intent RFC-S §5 metrics). Cut (c) "N-mode
+generalization" cancelled 2026-05-16 — premise overturned by framework
+cross-check; the 2-mode CanonicalState is the framework's universal
+canonical representation, not a 2-mode-as-N=2-special-case (see
+§v2.2-cancelled tombstone below).
+What remains: v4 → v5 → v6.
 
 This document is the single brief that carries from one session to the
 next. It is **not** a roadmap — sequencing lives in
@@ -47,9 +49,8 @@ always — refine in place).
 
 | Version | Theme | Depends on |
 |---|---|---|
-| v1–v2.4 | Foundation, JAX, Bayesian, intents, Caputo — all shipped 2026-05-16 (see README §Session Log) | — (shipped) |
+| v1–v3 | Foundation, JAX, Bayesian, intents, Caputo, cross-substrate, active learning, MCP, LearnedField — all shipped 2026-05-16 (see README §Session Log) | — (shipped) |
 | ~~v2.2~~ | ~~N-mode generalization (cut c)~~ — cancelled 2026-05-16; tombstone retained below | — |
-| **v3** | Cross-substrate operations + active learning + MCP server + learned translation-field form | v2.* (active learning prefers v2.1's posteriors; per-intent round-trip metrics in `validate_driver_profile` tightened here per RFC-S §5) |
 | **v4** | Streaming / online operation + symbolic query interface + notebook ergonomics | v3 (or v2.* if v3 deferred) |
 | **v5** | Continuous Banach self-test cadence + sensitivity backprop + gradient-based inversion replacing grid where invertible | v2.0 (v3/v4 optional) |
 | **v6** | One-shot native port (Rust or C++). Zero new features. Per-seed reproducibility against the v5 Python. | v5 |
@@ -137,81 +138,6 @@ such re-opening per CLAUDE.md's no-eighth-operation rule.
 
 ---
 
-## §v3 — Cross-substrate operations + active learning + MCP server + learned translation-field form
-
-**Goal.** First-class cross-substrate operations (gamut overlap,
-canonical-state distance, universality-class agreement). Active
-learning that suggests where curators should measure next. Expose the
-solver as an MCP server. Add a learned-NN translation-field form
-alongside lookup_table and tangent_flow.
-
-**Capabilities to land.**
-
-- **Cross-substrate ops** — new operations (each on the wrapped
-  surface): `gamut_overlap(profile_a, profile_b)`,
-  `canonical_distance(state_a, state_b, metric)`,
-  `universality_agreement(profile_a, profile_b)`. The framework's
-  primary cross-substrate test (s→r migration per cdv1 §gFDR
-  signatures) becomes a direct call. `universality_agreement`
-  consumes the v2.3 intent algebra (I5's universality-class metric
-  per RFC-S §5). Cross-substrate flow comparison composes the v2.4
-  Caputo path (substrates with differing β_mem must be compared at
-  matched ν, not matched-step-count). These count against the
-  "seven-operation API stays stable" rule — they are *cross-substrate
-  compositions*, not new fundamental ops.
-- **Active learning** — `suggest_measurements(profile, n=5)` returns
-  candidate operating points where the driver profile is weak
-  (high-uncertainty regions in canonical space, gamut edges with low
-  classification confidence). Curator operators consume these when
-  planning library expansions. Builds on v2.1's `Posterior` (uses
-  log-evidence + covariance trace as the per-point uncertainty
-  surface) and v2.3's intent invariance flags (suggest measurements
-  in cells where intent invariants are at risk).
-- **Per-intent round-trip metrics in `validate_driver_profile`** —
-  v2.3 relaxed the I5-only restriction and uses 5-bucket agreement
-  for every intent. v3 tightens this to the per-intent metrics
-  spelled out in RFC-S §5 (Hamming on regime partition for I1, L²
-  on drive vector for I2, ‖Γ*‖ deviation for I3, sequence distance
-  on {ε_n} for I4, universality-class agreement for I5). Lands as
-  part of the cross-substrate ops session since the metric table
-  there is the same table.
-- **MCP server** — the seven operations exposed as MCP tools.
-  Stateless, JSON I/O. Read-only over driver profiles (no write
-  surface). Tested against the MCP reference client.
-- **Learned translation-field form** — `LearnedField` joins
-  `LookupTableField` and `TangentFlowField` as a third shape.
-  `apply_translation` dispatches on `field.shape == "learned"`.
-  Implementation: small JAX MLP using the v2.0 `jax_core` /
-  `jax_ops` foundation (the differentiable-forward-map surface
-  is already in place). Weights ship in the driver profile. Training
-  is curator-side (separate concern); solver only evaluates.
-
-**Acceptance.**
-
-- v0 + v1 + v2 fixtures pass unchanged.
-- New: `test_cross_substrate.py`, `test_active_learning.py`,
-  `test_mcp_server.py`, `test_learned_field.py`.
-- README + CLAUDE.md updated; §v3 deleted from this block-in;
-  §v4/v5 refined for any cross-substrate API decisions that affect
-  them.
-- Tagged `v3.0.0`.
-
-**Dependencies.** v2.0 shipped (the minimum); active learning needs
-v2.1's `Posterior`. MCP server needs no upstream — schedule freely
-within v3.
-
-**Open / watch.**
-
-- MCP server lifecycle: long-running process vs stdio-per-call.
-  Default to stdio (matches the broader MCP convention); long-running
-  only if a consumer asks.
-- The learned-field shape will pressure the driver-profile schema in
-  mpa-atlas. Coordinate the schema bump with the same session, or
-  ship learned_field as forward-compat optional and bump driver-
-  profile separately.
-
----
-
 ## §v4 — Streaming / online operation + symbolic query interface + notebook ergonomics
 
 **Goal.** Solver consumes substrate observations as a stream and
@@ -224,11 +150,18 @@ Notebook / REPL ergonomics across the board.
 - **Streaming API** — `forward_sweep_invert_stream(observations: Iterator[SubstrateState], field, tau_obs) -> Iterator[InversionResult]`.
   State-local (per-frame); no cross-frame leakage. Supports stdin /
   WebSocket / polling sources via thin adapters in `mpa_scale_solver.streams`.
+  The v3 MCP transport is stdio-per-call; v4's streaming is the
+  intra-call analogue (a single tool invocation pulling from an
+  iterator). v4 may expose a streaming MCP tool variant if a
+  consumer asks; defer until then.
 - **Symbolic query** — `query("what tau_obs makes substrate <id>
   cross the c→s threshold?")` parses a small DSL and translates to
   operation chains. Returns piecewise expressions where they exist +
-  numerical evaluations.
-- **Notebook ergonomics** — rich `__repr__` for every dataclass;
+  numerical evaluations. v3's cross-substrate ops (`gamut_overlap`,
+  `canonical_distance`, `universality_agreement`) are likely natural
+  query targets; structure the DSL so they compose.
+- **Notebook ergonomics** — rich `__repr__` for every dataclass
+  (including v3's `LearnedField` and `MeasurementCandidate`);
   default `_repr_html_` for Jupyter; default plot hooks (matplotlib
   + plotly) per north-star §Visualization-first; lazy evaluation
   where it helps.
@@ -244,13 +177,17 @@ Notebook / REPL ergonomics across the board.
 
 **Dependencies.** v3 shipped (or v2 if v3 deferred — the streaming
 shape doesn't require cross-substrate ops). Active-learning streaming
-benefits from v3's `suggest_measurements`.
+benefits from v3's `suggest_measurements`; the symbolic-query DSL can
+target v3's cross-substrate ops directly.
 
 **Open / watch.**
 
 - Symbolic query is a feature-rich DSL. Scope risk: keep the v4
   surface small (5 query patterns max) and defer richer DSL to a
   later session if the demand surfaces.
+- Streaming MCP tool variant: hold until a consumer asks. The v3
+  MCP server's call-per-request shape already covers the common
+  agentic workflow.
 
 ---
 
@@ -281,7 +218,9 @@ monotonic regions (grid stays for ambiguity).
   `method="grid"` for back-compat and ambiguity reporting. Tangent-
   flow already lands closed-form via v2.0's
   `jax_ops.forward_sweep_invert_diff`; v5 generalizes to learned-
-  field and lookup-table-with-smooth-surrogate cases.
+  field (v3 `LearnedField` shape — `learned_field_substrate_diff` is
+  already differentiable, so v5 only needs the inversion driver) and
+  lookup-table-with-smooth-surrogate cases.
 
 **Acceptance.**
 
@@ -303,6 +242,9 @@ monotonic regions (grid stays for ambiguity).
 - Gradient-based inversion in ambiguous regions: silent fall-back to
   grid vs explicit ambiguity report. Default to explicit report
   (matches the "Bayesian posterior over point estimates" v2 stance).
+- Active-learning composability: v3's `suggest_measurements` returns
+  a composite score. v5's gradient-based inversion can pick MCMC
+  starting points from these candidates if they earn weight.
 
 ---
 
@@ -324,8 +266,11 @@ browser-side execution becomes load-bearing.
 - Continuous self-test cadence.
 - Sensitivity backprop (via the native autodiff library — `enzyme`
   for Rust, `autodiff` / hand-written for C++; pick at session time).
-- Streaming + symbolic query + cross-substrate ops + Bayesian +
-  Caputo + full intents (I1–I5) + composition.
+- Streaming + symbolic query + cross-substrate ops + active learning +
+  Bayesian + Caputo + full intents (I1–I5) + composition.
+- MCP server (port via the native MCP SDK once one exists; or keep
+  Python `mcp_server.py` as a thin wrapper invoking native through
+  pybind11/pyo3 if no native MCP SDK is mature at v6 session time).
 
 **Math source.** `mpa_scale_solver/jax_core.py` is the canonical
 math the port reads. Every primitive in jax_core has a 1:1 native

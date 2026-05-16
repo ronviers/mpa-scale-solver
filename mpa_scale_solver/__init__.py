@@ -47,6 +47,8 @@ from .types import (
     ValidationReport,
     # v2.1 addition
     Posterior,
+    # v3 addition
+    LearnedField,
 )
 from .operations import (
     # v0 sigs unchanged
@@ -74,6 +76,21 @@ from .operations import (
     # v2.3 intent composition
     intent_compose,
     intent_compose_wrapped,
+)
+from .cross_substrate import (
+    # v3 cross-substrate compositions (BLOCK_IN §v3)
+    canonical_distance,
+    canonical_distance_wrapped,
+    gamut_overlap,
+    gamut_overlap_wrapped,
+    universality_agreement,
+    universality_agreement_wrapped,
+)
+from .active_learning import (
+    # v3 active learning (BLOCK_IN §v3)
+    MeasurementCandidate,
+    suggest_measurements,
+    suggest_measurements_wrapped,
 )
 from .flow import flow
 from .banach import BanachSubstrate, build_sidecar_for_banach
@@ -121,6 +138,9 @@ __all__ = [
     "ValidationReport",
     # types — v2.1
     "Posterior",
+    # types — v3
+    "LearnedField",
+    "MeasurementCandidate",
     # operations — v0
     "apply_translation",
     "forward_sweep_invert",
@@ -146,6 +166,16 @@ __all__ = [
     # operations — v2.3 (intent composition)
     "intent_compose",
     "intent_compose_wrapped",
+    # operations — v3 (cross-substrate)
+    "canonical_distance",
+    "canonical_distance_wrapped",
+    "gamut_overlap",
+    "gamut_overlap_wrapped",
+    "universality_agreement",
+    "universality_agreement_wrapped",
+    # operations — v3 (active learning)
+    "suggest_measurements",
+    "suggest_measurements_wrapped",
     # v1 new functions / modules
     "flow",
     "BanachSubstrate",

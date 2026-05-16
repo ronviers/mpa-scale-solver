@@ -19,7 +19,7 @@ the Python under the per-seed reproducibility discipline.
 | `regime_at` | five-bucket vertex regime classifier |
 | `gamut_classify` | in-gamut / out-of-gamut diagnosis |
 | `intent_map` | All five intents (I1–I5) + composition (`intent_compose`) per RFC-S §3 |
-| `validate_driver_profile` | RFC-S §5 round-trip residuals |
+| `validate_driver_profile` | RFC-S §5 round-trip residuals + per-intent metric dispatch (v3) |
 
 Plus the v1 addition `flow(canonical_initial, nu, field)` — continuous-form
 `C^nu = exp(nu * ln C)`. Markovian by default (`beta_mem = 1`); v2.4 adds
@@ -78,6 +78,40 @@ The v0/v1 `apply_translation`, `flow`, `forward_sweep_invert`, and
 `tau_obs_sweep` (and their `*_wrapped` variants) are unchanged. The
 JAX surface is parallel and opt-in — consumers that don't need
 gradients call the v0/v1 surface as before.
+
+## v3 additions
+
+v3 lands four new capability slices alongside the seven-operation API
+(which stays stable per CLAUDE.md):
+
+- **Cross-substrate ops** (`cross_substrate.py`) —
+  `gamut_overlap(gamut_a, gamut_b)`, `canonical_distance(a, b, metric)`
+  (`l2` / `l1` / `regime` / `universality`), and
+  `universality_agreement(field_a, gamut_a, field_b, gamut_b,
+  canonical_grid, tau_obs)` — the framework's primary cross-substrate
+  test (s→r migration per cdv1 §gFDR signatures) as a direct call.
+  Each has a `*_wrapped` variant with validation + provenance.
+- **Active learning** (`active_learning.py`) —
+  `suggest_measurements(field, gamut, canonical_grid, tau_obs, n)`
+  returns `MeasurementCandidate`s ranked by a composite score: posterior
+  covariance-trace (v2.1 surface) + gamut-edge proximity + intent-
+  invariance fragility (v2.3 surface). Weights are configurable.
+- **MCP server** (`mcp_server.py`) — the seven core operations plus the
+  three cross-substrate ops plus `suggest_measurements` exposed as 11
+  MCP tools over stdio. JSON-shape I/O. Read-only. Console script
+  `mpa-scale-solver-mcp` or `python -m mpa_scale_solver.mcp_server`.
+- **Learned translation field** (`LearnedField`) — third field shape
+  alongside `lookup_table` and `tangent_flow`. Small JAX MLP
+  `(chit, gamma_AB, log(tau/tau_ref))` → `(substrate_chit,
+  substrate_gamma_AB)`. Curators train (mpa-conform); the solver
+  evaluates. `apply_translation` dispatches on `shape == "learned"`.
+
+v3 also tightens `validate_driver_profile` to the per-intent metrics
+spelled out in RFC-S §5 (Hamming for I1, L²-on-drive for I2, ‖Γ*‖
+deviation for I3, ε-sequence-distance for I4, universality-class
+agreement for I5). v2.3's regime-agreement-rate / forward-residual /
+round-trip-residual keys are preserved for back-compat; the per-intent
+aggregate rides as `summary["per_intent"]`.
 
 ## Install
 
@@ -178,3 +212,4 @@ per-frame EXR channels mpa-conform assembles using outputs from this repo.
 | 2026-05-16 | Python v2.1.0 build (BLOCK_IN §v2 cut (b)) | Bayesian inversion via Laplace approximation. New `Posterior` dataclass + `forward_sweep_invert_posterior` / `_wrapped` (separate function rather than `posterior=True` kwarg — cleaner return-type contract; sanctioned at session time). Tangent-flow fast path: MAP exact, covariance = `noise_variance * inv(J^T J)`, finite log-evidence. Lookup-table path: weighted-moment fit over top-k lowest-residual candidates. New `jax_core.laplace_covariance_from_jacobian` / `laplace_covariance_from_hessian` / `laplace_log_evidence` primitives. All prior tests still green plus 14 new bayesian-inversion tests. Cuts (c)–(e) remain. |
 | 2026-05-16 | Python v2.3.0 build (BLOCK_IN §v2 cut (d)) | All five intents implemented: I1 regime-preserving (regime ∧ sign(γ) ∧ k_frust), I2 drive-faithful (no-adjust + completeness sacrifice), I3 capacity-preserving (deep/shallow capacity class ∧ k_frust), I4 persistence-preserving (sign(γ_AB) contraction-ordering proxy), I5 signature-preserving (5-bucket regime, v0/v1 contract preserved verbatim). New `intent_compose` + `intent_compose_wrapped` enforce RFC-S §3 composition algebra: I2 rejected in chains, other intents sequence freely with per-intent sacrifices in the trace. `validate_driver_profile` accepts all five intent ids (5-bucket agreement metric; per-intent metric tightening deferred to v3 alongside cross-substrate ops). 28 new tests in `test_intents.py`; 202 tests total green. §v2.2 (N-mode) remains cancelled. Cut (e) Caputo flow remains. |
 | 2026-05-16 | Python v2.4.0 build (BLOCK_IN §v2 cut (e)) | Non-Markovian Caputo flow via Prony sum-of-exponentials approximation of the Mittag-Leffler kernel. New `jax_core.caputo_flow` primitive (differentiable in all parameters); `flow()` and `flow_diff()` dispatch on `refinement['beta_mem']` (β < 1 → Caputo; β = 1 → v1 Markovian unchanged). `ScalingRule.refinement` accepts `beta_mem: float` and `prony_terms: list[tuple[float, float]]` (curator-supplied amplitude / decay pairs; on-the-fly Mittag-Leffler fitting is mpa-conform's curator-path job). 10 new tests in `test_caputo_flow.py`: β=1 byte-identity vs v1 Markovian, per-axis lambda independence, jax/python parity, jax.grad finite-difference, jit compile, error path. 212 tests total green. **v2 complete** — all cuts (a)–(e) shipped except cancelled (c). |
+| 2026-05-16 | Python v3.0.0 build (BLOCK_IN §v3) | Five capabilities in one bundled cut. (1) **Cross-substrate ops** — `gamut_overlap`, `canonical_distance` (l2/l1/regime/universality metrics), `universality_agreement` (the framework's primary s→r migration test per cdv1 §gFDR) live in `cross_substrate.py` with `*_wrapped` variants. The seven-operation API is unchanged; these are cross-substrate compositions per CLAUDE.md. (2) **Active learning** — `suggest_measurements(field, gamut, grid, tau_obs, n)` returns ranked `MeasurementCandidate`s scored by composite (posterior covariance-trace + gamut-edge proximity + intent-invariance fragility); weights configurable. Builds on v2.1 `Posterior` + v2.3 intent algebra. (3) **Per-intent RFC-S §5 metrics** — `validate_driver_profile` now dispatches per intent: I1 Hamming-on-regime + edge-type, I2 L²-on-drive + max-γ, I3 ‖Γ*‖-deviation + capacity-class, I4 ε-sequence-distance + survival, I5 universality-class + intra-class-L². v2.3 back-compat keys preserved. (4) **MCP server** — 11 tools (7 core + 3 cross-substrate + 1 active-learning) exposed via stdio in `mcp_server.py`; thin (one dispatch function per tool, hardcoded JSON schemas); console script `mpa-scale-solver-mcp`. `mcp>=1.0` added as a hard dep. (5) **LearnedField** — third translation-field shape; small JAX MLP `(chit, gamma_AB, log(tau/tau_ref))` → `(substrate_chit, substrate_gamma_AB)`; `jax_core.mlp_forward` + `learned_field_substrate` primitives; `jax_ops.learned_field_substrate_diff` consumer entry; `apply_translation` dispatches on `shape == "learned"`; `parse_translation_field` parses the `learned` JSON shape (forward-compat under driver-profile schema's `additionalProperties` until mpa-atlas bumps the schema). 74 new tests: `test_cross_substrate.py` (34), `test_active_learning.py` (11), `test_mcp_server.py` (17), `test_learned_field.py` (12). 286 tests total green; all v0/v1/v2 fixtures pass unchanged. |

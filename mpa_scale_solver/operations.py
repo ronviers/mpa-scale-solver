@@ -37,6 +37,7 @@ from .types import (
     DispatchPath,
     GamutSpec,
     InverseLookupSidecar,
+    LearnedField,
     OperatingPoint,
     OperationOutput,
     RegimeLabel,
@@ -124,7 +125,7 @@ class TranslationFieldIndex:
 
 def apply_translation(
     canonical: CanonicalState,
-    field: Union[TranslationField, TangentFlowField, "TranslationFieldIndex"],
+    field: Union[TranslationField, TangentFlowField, LearnedField, "TranslationFieldIndex"],
     tau_obs: float,
     *,
     domain_distance_threshold: float = DEFAULT_DOMAIN_DISTANCE_THRESHOLD,
@@ -142,6 +143,9 @@ def apply_translation(
         matched rule's operating-point identity.
       - `tangent_flow` (v1): apply the ScalingRule closed form and project
         through `rule_at_origin`.
+      - `learned` (v3): evaluate the curator-trained MLP at
+        `(chit, gamma_AB, log(tau_obs / tau_obs_ref))`; the substrate
+        identity rides through `rule_at_origin`.
 
     Raises ValueError for lookup_table when the nearest rule is beyond
     `domain_distance_threshold` — the curator-path's signal that the
@@ -150,6 +154,8 @@ def apply_translation(
     """
     if isinstance(field, TangentFlowField):
         return _apply_tangent_flow(canonical, field, tau_obs)
+    if isinstance(field, LearnedField):
+        return _apply_learned(canonical, field, tau_obs)
     return _apply_lookup(
         canonical, field, tau_obs,
         domain_distance_threshold=domain_distance_threshold,
@@ -185,6 +191,35 @@ def _apply_lookup(
         observables={
             "canonical_chit": rule.canonical.chit,
             "canonical_gamma_AB": rule.canonical.gamma_AB,
+        },
+    )
+
+
+def _apply_learned(
+    canonical: CanonicalState,
+    field: LearnedField,
+    tau_obs: float,
+) -> SubstrateState:
+    """Learned-field forward map (v3 BLOCK_IN §v3).
+
+    Delegates to the JAX MLP primitive in `jax_core.learned_field_substrate`
+    via the consumer entry in `jax_ops.learned_field_substrate_diff`. The
+    substrate identity rides through `rule_at_origin` (mirrors the
+    tangent-flow branch).
+    """
+    from .jax_ops import learned_field_substrate_diff
+
+    s_chit, s_gamma = learned_field_substrate_diff(canonical, field, tau_obs)
+    origin = field.rule_at_origin
+    axes = dict(origin.operating_point.axes)
+    axes["tau_obs"] = tau_obs
+    return SubstrateState(
+        tau_obs=tau_obs,
+        label=origin.operating_point.label,
+        axes=axes,
+        observables={
+            "substrate_chit": float(s_chit),
+            "substrate_gamma_AB": float(s_gamma),
         },
     )
 
@@ -294,8 +329,8 @@ def forward_sweep_invert(
         )
     score_fn = score_fn or _default_substrate_score
     if forward_map is None:
-        if isinstance(field, TangentFlowField):
-            # Tangent-flow apply_translation is closed-form; no index.
+        if isinstance(field, (TangentFlowField, LearnedField)):
+            # Closed-form forward map; no index needed.
             _field = field
             def forward_map(c: CanonicalState, t: float) -> SubstrateState:  # type: ignore[misc]
                 return apply_translation(c, _field, t)
@@ -360,8 +395,8 @@ def tau_obs_sweep(
             )
 
     # Build the field index once for lookup_table; reuse across frames.
-    # Tangent-flow has no index — apply_translation dispatches directly.
-    if forward_map is None and not isinstance(field, TangentFlowField):
+    # Closed-form fields (tangent_flow, learned) dispatch directly.
+    if forward_map is None and not isinstance(field, (TangentFlowField, LearnedField)):
         index: Optional[TranslationFieldIndex] = TranslationFieldIndex(field)
     else:
         index = None
@@ -832,13 +867,14 @@ def _sign_preserving_clamp(
 # ---------------------------------------------------------------------------
 
 def validate_driver_profile(
-    field: TranslationField,
+    field: AnyTranslationField,
     reference_dataset: list[dict[str, Any]],
     canonical_search_grid: np.ndarray,
     *,
     intent_id: str = "I5",
+    gamut: Optional[GamutSpec] = None,
 ) -> dict[str, Any]:
-    """RFC-S §5 round-trip validation.
+    """RFC-S §5 round-trip validation with per-intent metrics (v3).
 
     Each entry of `reference_dataset` is a dict with:
         canonical_state: CanonicalState (the truth)
@@ -846,29 +882,43 @@ def validate_driver_profile(
         expected_substrate: SubstrateState | None (optional; auto-computed
             by apply_translation when None)
 
-    Returns a per-entry residual record plus aggregate stats. The metric
-    is 5-bucket regime agreement at every intent for v2.3 — that is the
-    I5 universality-class metric per RFC-S §5 and a permissible coarsening
-    for I1/I3/I5 (whose state-level invariants reduce to / subsume regime
-    agreement). I2's drive-faithful invariant and I4's contraction-
-    ordering trajectory metric per §5 will land alongside cross-substrate
-    operations in v3; until then v2.3 reports the same regime-agreement
-    surface for every intent id, with intent recorded for traceability.
+    v3 tightens v2.3's regime-only metric to the per-intent metrics
+    spelled out in RFC-S §5:
+
+      I1 Hamming on regime partition + edge-type (sign(γ)) agreement
+      I2 L² on drive vector + max γ deviation
+      I3 ‖Γ*‖ deviation + capacity-class + k_frust match
+      I4 sequence distance on {ε_n} (sign(γ) proxy) + survival
+      I5 universality-class agreement + intra-class L²
+
+    The summary keeps v2.3's `forward_residuals` / `round_trip_residuals`
+    / `regime_agreements` / `*_mean` / `regime_agreement_rate` keys for
+    back-compat, and adds `per_intent` carrying the intent-specific
+    aggregate (per `validation.aggregate_per_intent_metrics`).
+
+    `gamut` (optional) supplies the I4 survival check; without it, I4's
+    `survival` defaults to True per cell.
     """
     if intent_id not in _INTENT_IDS:
         raise ValueError(f"unknown intent: {intent_id!r}")
 
-    index = TranslationFieldIndex(field)
+    is_indexed_field = isinstance(field, TranslationField)
+    index = TranslationFieldIndex(field) if is_indexed_field else None
+
     forward_residuals: list[float] = []
     round_trip_residuals: list[float] = []
     regime_agreements: list[bool] = []
+    per_cell_metrics: list[dict[str, Any]] = []
 
     for entry in reference_dataset:
         canonical: CanonicalState = entry["canonical_state"]
         tau_obs: float = float(entry["tau_obs"])
         expected: Optional[SubstrateState] = entry.get("expected_substrate")
 
-        predicted = apply_translation(canonical, index, tau_obs)
+        if index is not None:
+            predicted = apply_translation(canonical, index, tau_obs)
+        else:
+            predicted = apply_translation(canonical, field, tau_obs)
         if expected is not None:
             fwd_err = _default_substrate_score(predicted, expected)
         else:
@@ -877,6 +927,14 @@ def validate_driver_profile(
 
         recovered, _ = forward_sweep_invert(
             predicted, field, tau_obs, canonical_search_grid,
+        )
+        # Preserve k_frust from truth through the recovered state for
+        # I1/I3 metrics that read it (forward_sweep_invert returns a
+        # fresh CanonicalState without k_frust propagation).
+        recovered = CanonicalState(
+            chit=recovered.chit,
+            gamma_AB=recovered.gamma_AB,
+            k_frust=canonical.k_frust,
         )
         rt_err = math.sqrt(
             (recovered.chit - canonical.chit) ** 2
@@ -888,7 +946,17 @@ def validate_driver_profile(
         rec_r = regime_at(recovered, tau_obs).regime
         regime_agreements.append(orig_r == rec_r)
 
-    return {
+        # I4 survival requires gamut residency of the recovered point.
+        in_gamut: Optional[bool] = None
+        if gamut is not None:
+            in_gamut = gamut_classify(recovered, tau_obs, gamut)["in_gamut"]
+        per_cell_metrics.append(
+            _validation.per_intent_cell_metric(
+                intent_id, canonical, recovered, in_gamut=in_gamut,
+            )
+        )
+
+    summary: dict[str, Any] = {
         "intent": intent_id,
         "forward_residuals": forward_residuals,
         "round_trip_residuals": round_trip_residuals,
@@ -896,19 +964,37 @@ def validate_driver_profile(
         "forward_mean": float(np.mean(forward_residuals)) if forward_residuals else 0.0,
         "round_trip_mean": float(np.mean(round_trip_residuals)) if round_trip_residuals else 0.0,
         "regime_agreement_rate": float(np.mean(regime_agreements)) if regime_agreements else 0.0,
+        "per_intent": _validation.aggregate_per_intent_metrics(intent_id, per_cell_metrics),
     }
+    return summary
 
 
 # ---------------------------------------------------------------------------
 # Driver-profile JSON loader (consumer convenience)
 # ---------------------------------------------------------------------------
 
-def parse_translation_field(d: dict[str, Any]) -> TranslationField:
-    """Parse a driver-profile.v2.0 `translation_field` block into types.
+def parse_translation_field(d: dict[str, Any]) -> AnyTranslationField:
+    """Parse a driver-profile.v2.0+ `translation_field` block into types.
 
-    Tolerant of the seed-corpus convention where operating-point axes ride
-    `additionalProperties` (label, gt, plus arbitrary other keys).
+    Dispatches on `d["shape"]`:
+      - `lookup_table` (default, v0): the seed-corpus convention.
+      - `learned` (v3 BLOCK_IN §v3): MLP weights + architecture +
+        rule_at_origin. Forward-compat under the schema's
+        `additionalProperties` allowance until the mpa-atlas driver-
+        profile schema bump admits `shape: "learned"` explicitly.
+
+    `tangent_flow` fields are built programmatically by the curator
+    (Banach reference / fitted scaling rules); no parser branch is
+    needed at v3 because curators do not write tangent-flow JSON by
+    hand in the seed corpus.
+
+    Tolerant of the seed-corpus convention where operating-point axes
+    ride `additionalProperties` (label, gt, plus arbitrary other keys).
     """
+    shape = d.get("shape", "lookup_table")
+    if shape == "learned":
+        return _parse_learned_field(d)
+
     rules: list[TranslationRule] = []
     for r in d.get("rule", []):
         op_d = r["operating_point"]
@@ -933,8 +1019,66 @@ def parse_translation_field(d: dict[str, Any]) -> TranslationField:
         ))
     return TranslationField(
         direction=d.get("direction", "forward"),
-        shape=d.get("shape", "lookup_table"),
+        shape=shape,
         rule=rules,
+        description=d.get("description"),
+    )
+
+
+def _parse_learned_field(d: dict[str, Any]) -> LearnedField:
+    """Parse a `shape: "learned"` translation_field block into a LearnedField.
+
+    Expected JSON shape:
+
+        {
+          "direction": "forward",
+          "shape": "learned",
+          "rule_at_origin": {<TranslationRule shape>},
+          "weights": [ [[[w11, w12, ...], ...], [b1, b2, ...]], ... ],
+          "architecture": [3, hidden, ..., 2],
+          "activation": "tanh" | "relu",
+          "tau_obs_ref": 1.0,
+          "description": "..."
+        }
+    """
+    r = d["rule_at_origin"]
+    op_d = r["operating_point"]
+    known = {"label", "gt"}
+    op_axes = {k: v for k, v in op_d.items() if k not in known}
+    op = OperatingPoint(label=op_d["label"], gt=op_d["gt"], axes=op_axes)
+    c_d = r["canonical"]
+    c_known = {"chit", "gamma_AB", "k_frust", "method"}
+    c_extras = {k: v for k, v in c_d.items() if k not in c_known}
+    canonical = CanonicalPoint(
+        chit=float(c_d["chit"]),
+        gamma_AB=float(c_d["gamma_AB"]),
+        k_frust=bool(c_d["k_frust"]),
+        method=str(c_d["method"]),
+        extras=c_extras,
+    )
+    origin = TranslationRule(
+        operating_point=op,
+        xdot_choice=str(r["xdot_choice"]),
+        canonical=canonical,
+    )
+
+    weights_raw = d["weights"]
+    weights: tuple[tuple[tuple[tuple[float, ...], ...], tuple[float, ...]], ...] = tuple(
+        (
+            tuple(tuple(float(v) for v in row) for row in W),
+            tuple(float(v) for v in b),
+        )
+        for W, b in weights_raw
+    )
+    architecture = tuple(int(n) for n in d["architecture"])
+    return LearnedField(
+        direction=d.get("direction", "forward"),
+        shape="learned",
+        rule_at_origin=origin,
+        weights=weights,
+        architecture=architecture,
+        activation=d.get("activation", "tanh"),
+        tau_obs_ref=float(d.get("tau_obs_ref", 1.0)),
         description=d.get("description"),
     )
 
@@ -1212,9 +1356,11 @@ def validate_driver_profile_wrapped(
     canonical_search_grid: np.ndarray,
     *,
     intent_id: str = "I5",
+    gamut: Optional[GamutSpec] = None,
 ) -> OperationOutput[dict[str, Any]]:
     summary = validate_driver_profile(
-        field, reference_dataset, canonical_search_grid, intent_id=intent_id,
+        field, reference_dataset, canonical_search_grid,
+        intent_id=intent_id, gamut=gamut,
     )
     report = _validation.report_for_validate_driver_profile(summary)
     prov = make_provenance("validate_driver_profile")

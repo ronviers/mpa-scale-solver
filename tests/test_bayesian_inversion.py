@@ -246,7 +246,8 @@ class TestForwardSweepInvertPosteriorDispatch:
         assert isinstance(out.value, Posterior)
         assert out.provenance.operation == "forward_sweep_invert_posterior"
         assert out.provenance.dispatch_path == DispatchPath.DIRECT_COMPUTE
-        assert out.provenance.solver_version.startswith("2.")
+        from mpa_scale_solver import __version__
+        assert out.provenance.solver_version == __version__
         assert out.validation.asymptotic_closure_compliant is True
 
 

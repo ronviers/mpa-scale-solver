@@ -9,10 +9,10 @@
 - The seven `*_wrapped` variants returning `OperationOutput[T]` with
   `ValidationReport` + `Provenance` riding alongside the value (handoff
   §A.2 / §C.5 / §C.6).
-- Two translation-field shapes: `TranslationField` (lookup_table, v0)
-  and `TangentFlowField` (v1, RFC-S Appendix B item 1, with the Banach
-  γ-scaling as the canonical leading-order rule). `apply_translation`
-  dispatches on `field.shape`.
+- Three translation-field shapes: `TranslationField` (lookup_table, v0),
+  `TangentFlowField` (v1, RFC-S Appendix B item 1, with the Banach
+  γ-scaling as the canonical leading-order rule), and `LearnedField`
+  (v3, small JAX MLP). `apply_translation` dispatches on `field.shape`.
 - The `BanachSubstrate` calibration class + closed-form `state_at(nu)`
   used as the v1 camera-test fixture. Authoritative spec lives in
   mpa-conform; this repo vendors the runtime class.
@@ -57,6 +57,39 @@
   uniform keys plus intent-specific diagnostics; v1's I5 keys
   (`regime_preserved`, `original_regime`, `mapped_regime`) are
   preserved verbatim.
+- **v3 cross-substrate compositions:** `cross_substrate.py` carries
+  `gamut_overlap`, `canonical_distance` (l2 / l1 / regime /
+  universality), `universality_agreement` (the framework's s→r
+  migration test as a direct call) plus `*_wrapped` variants. The
+  seven-operation API is unchanged — these are *cross-substrate
+  compositions* per the thin-discipline rule below.
+- **v3 active learning:** `active_learning.py` carries
+  `suggest_measurements` returning `MeasurementCandidate`s ranked by
+  composite score (posterior covariance-trace + gamut-edge proximity
+  + intent-invariance fragility); weights configurable. Builds on
+  v2.1 `Posterior` and v2.3 intent algebra.
+- **v3 per-intent RFC-S §5 metrics:** `validate_driver_profile`
+  dispatches per intent — I1 Hamming-on-regime + edge-type, I2
+  L²-on-drive + max-γ, I3 ‖Γ*‖-deviation + capacity-class, I4
+  ε-sequence-distance + survival, I5 universality-class + intra-class
+  L². Aggregator helpers in `validation.py`
+  (`per_intent_cell_metric`, `aggregate_per_intent_metrics`). v2.3
+  back-compat keys (`forward_residuals`, `round_trip_residuals`,
+  `regime_agreements`, `regime_agreement_rate`) preserved.
+- **v3 MCP server:** `mcp_server.py` exposes 11 tools (7 core + 3
+  cross-substrate + 1 active-learning) over stdio. Stateless, JSON
+  I/O, read-only. Thin (one dispatch function per tool, hardcoded
+  schemas; no framework gymnastics). Console script
+  `mpa-scale-solver-mcp` declared in pyproject. `mcp>=1.0` hard dep.
+- **v3 LearnedField:** small JAX MLP forward map under
+  `jax_core.mlp_forward` + `jax_core.learned_field_substrate`;
+  consumer entry `jax_ops.learned_field_substrate_diff`. Weights ride
+  as nested tuples for JSON serialization; training is curator-side
+  (mpa-conform). Forward-compat: the mpa-atlas driver-profile schema
+  bump to admit `shape: "learned"` lands in a separate session;
+  until then curators ship the learned-field block under the schema's
+  `additionalProperties` allowance, parsed by
+  `_parse_learned_field`.
 
 Named family of operations, parallel to `mpa-solver`. Sibling, not nested.
 
@@ -200,9 +233,11 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
   approximation of the Mittag-Leffler kernel. `flow()` and `flow_diff()`
   dispatch on `refinement['beta_mem']`; β = 1 stays on the v1 Markovian
   path byte-identically. (Shipped 2026-05-16; v2 complete.)
-- **v3**: cross-substrate operations, active learning, MCP server
-  interface, learned translation-field form (LearnedField uses
-  jax_core / jax_ops directly).
+- **v3**: cross-substrate operations + active learning + MCP server +
+  LearnedField (third translation-field shape, small JAX MLP) +
+  per-intent RFC-S §5 metrics in `validate_driver_profile`. Seven-op
+  API unchanged; cross-substrate ops live as compositions in their own
+  module. (Shipped 2026-05-16; 286 tests green.)
 - **v4**: streaming / online operation, symbolic query interface,
   Mathematica-style exploration.
 - **v5**: continuous self-test cadence, sensitivity backprop (composes
@@ -222,6 +257,27 @@ Each is its own session, sequenced by the user via
 
 All twelve items met as of 2026-05-16. (Detail moved to README session
 log; the v1 acceptance contract is locked.)
+
+## Acceptance for the v3 build session
+
+Five items met as of 2026-05-16:
+
+1. v0 + v1 + v2 fixtures pass unchanged (212 prior tests green plus 74
+   new v3 tests: 34 cross-substrate, 11 active-learning, 17 MCP server,
+   12 learned-field). 286 tests total green.
+2. Cross-substrate ops in `cross_substrate.py` (`gamut_overlap`,
+   `canonical_distance`, `universality_agreement`) + `*_wrapped`
+   variants; the seven-operation API stays stable (these are
+   compositions, not new fundamental ops).
+3. Active learning: `suggest_measurements` returns ranked
+   `MeasurementCandidate`s using v2.1 Posterior + v2.3 intent algebra.
+4. Per-intent RFC-S §5 metrics in `validate_driver_profile`; v2.3
+   back-compat keys preserved.
+5. MCP server (`mcp_server.py`, stdio, 11 tools) +
+   `mpa-scale-solver-mcp` console script; `mcp>=1.0` hard dep.
+   LearnedField third shape with MLP forward map in jax_core/jax_ops;
+   parser extension in `parse_translation_field`. README + CLAUDE.md
+   updated; BLOCK_IN §v3 deleted; §v4/v5 refined.
 
 ## Acceptance for the v2.4 build session
 

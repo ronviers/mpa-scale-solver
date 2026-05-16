@@ -260,6 +260,197 @@ def report_for_intent_compose(
     )
 
 
+# ---------------------------------------------------------------------------
+# Per-intent RFC-S §5 metrics (v3 — BLOCK_IN §v3)
+# ---------------------------------------------------------------------------
+#
+# RFC-S §5 (v0.2) lists the metric each intent uses for both forward and
+# round-trip comparison:
+#
+#   I1 regime-preserving   : Hamming on regime partition;
+#                            agreement on edge-type partition (sign(γ))
+#   I2 drive-faithful      : L² on drive vector (chit, γ_AB);
+#                            max deviation on γ
+#   I3 capacity-preserving : ‖Γ*‖ deviation (chit distance to the |chit|=0.7
+#                            fixed-point boundary at the operational layer);
+#                            structural-pattern similarity (k_frust match
+#                            at the state level)
+#   I4 persistence-preserv : sequence distance on {ε_n} (sign(γ_AB)
+#                            contraction-ordering proxy at the state level);
+#                            survival-declaration agreement (gamut residency)
+#   I5 signature-preserving: universality-class agreement (5-bucket regime
+#                            label is the universality class at the
+#                            operational layer per cdv1 §gFDR);
+#                            intra-class parameter L² for matching cells
+#
+# Each helper takes (original, recovered) CanonicalStates and returns a
+# float (lower-is-better) plus an explanatory dict the summary aggregator
+# can fold per-intent.
+
+
+def _capacity_class(chit: float) -> str:
+    return "deep" if abs(chit) >= 0.7 else "shallow"
+
+
+def _sign(x: float) -> int:
+    if x > 0.0:
+        return 1
+    if x < 0.0:
+        return -1
+    return 0
+
+
+def per_intent_cell_metric(
+    intent_id: str,
+    original: CanonicalState,
+    recovered: CanonicalState,
+    *,
+    in_gamut: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Per-cell metric components for the named intent (RFC-S §5).
+
+    Returns a dict whose keys are intent-specific. `validate_driver_profile`
+    aggregates these into summary statistics.
+
+    `in_gamut` (optional) supplies the cell's gamut residency for the I4
+    survival-declaration component. None when the caller has not run
+    `gamut_classify` for this cell.
+    """
+    # Import locally to avoid circular import with operations.regime_at.
+    from .gfdr_model import vertex_regime
+
+    if intent_id == "I1":
+        # Hamming on regime partition + sign(gamma) agreement.
+        regime_match = vertex_regime(original.chit) == vertex_regime(recovered.chit)
+        sign_match = _sign(original.gamma_AB) == _sign(recovered.gamma_AB)
+        k_frust_match = original.k_frust == recovered.k_frust
+        return {
+            "regime_match": regime_match,
+            "edge_type_match": sign_match,
+            "k_frust_match": k_frust_match,
+            "hamming": 0 if (regime_match and sign_match) else 1,
+        }
+
+    if intent_id == "I2":
+        # L² on drive vector (chit, gamma_AB); max deviation on gamma.
+        d_chit = recovered.chit - original.chit
+        d_gamma = recovered.gamma_AB - original.gamma_AB
+        return {
+            "l2_drive": math.sqrt(d_chit * d_chit + d_gamma * d_gamma),
+            "gamma_deviation": abs(d_gamma),
+        }
+
+    if intent_id == "I3":
+        # ‖Γ*‖ deviation — distance to the |chit|=0.7 fixed-point boundary
+        # is the capacity-class signed distance at the operational layer;
+        # ‖Γ*‖ deviation between original and recovered is the change in
+        # that signed distance. Plus structural-pattern similarity (k_frust).
+        gamma_star_original = abs(original.chit) - 0.7
+        gamma_star_recovered = abs(recovered.chit) - 0.7
+        return {
+            "gamma_star_deviation": abs(gamma_star_recovered - gamma_star_original),
+            "capacity_class_match": _capacity_class(original.chit) == _capacity_class(recovered.chit),
+            "k_frust_match": original.k_frust == recovered.k_frust,
+        }
+
+    if intent_id == "I4":
+        # Sequence distance on {ε_n} at state-level: sign(gamma_AB)
+        # contraction-ordering proxy. Plus survival = in-gamut.
+        sign_match = _sign(original.gamma_AB) == _sign(recovered.gamma_AB)
+        return {
+            "epsilon_sequence_distance": 0 if sign_match else 1,
+            "survival": True if in_gamut is None else bool(in_gamut),
+        }
+
+    if intent_id == "I5":
+        # Universality-class agreement (5-bucket regime label is the
+        # universality class at the operational layer per cdv1 §gFDR);
+        # intra-class parameter distance (L² in canonical space).
+        original_class = vertex_regime(original.chit)
+        recovered_class = vertex_regime(recovered.chit)
+        class_match = original_class == recovered_class
+        d_chit = recovered.chit - original.chit
+        d_gamma = recovered.gamma_AB - original.gamma_AB
+        return {
+            "universality_class_match": class_match,
+            "intra_class_l2": math.sqrt(d_chit * d_chit + d_gamma * d_gamma) if class_match else None,
+            "original_class": original_class,
+            "recovered_class": recovered_class,
+        }
+
+    raise ValueError(f"unknown intent: {intent_id!r}")
+
+
+def aggregate_per_intent_metrics(
+    intent_id: str,
+    cells: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Aggregate per-cell intent metrics into summary statistics.
+
+    Returns the intent-specific summary block that rides next to the
+    summary's `forward_residuals` / `round_trip_residuals` keys.
+    """
+    n = len(cells)
+    if n == 0:
+        return {"intent": intent_id, "n_cells": 0}
+
+    if intent_id == "I1":
+        hamming = sum(c["hamming"] for c in cells) / n
+        return {
+            "intent": "I1",
+            "n_cells": n,
+            "hamming_rate": hamming,
+            "regime_match_rate": sum(1 for c in cells if c["regime_match"]) / n,
+            "edge_type_match_rate": sum(1 for c in cells if c["edge_type_match"]) / n,
+            "k_frust_match_rate": sum(1 for c in cells if c["k_frust_match"]) / n,
+        }
+
+    if intent_id == "I2":
+        l2s = [c["l2_drive"] for c in cells]
+        gdevs = [c["gamma_deviation"] for c in cells]
+        return {
+            "intent": "I2",
+            "n_cells": n,
+            "l2_drive_mean": sum(l2s) / n,
+            "l2_drive_max": max(l2s),
+            "gamma_deviation_max": max(gdevs),
+            "gamma_deviation_mean": sum(gdevs) / n,
+        }
+
+    if intent_id == "I3":
+        gsds = [c["gamma_star_deviation"] for c in cells]
+        return {
+            "intent": "I3",
+            "n_cells": n,
+            "gamma_star_deviation_mean": sum(gsds) / n,
+            "gamma_star_deviation_max": max(gsds),
+            "capacity_class_match_rate": sum(1 for c in cells if c["capacity_class_match"]) / n,
+            "k_frust_match_rate": sum(1 for c in cells if c["k_frust_match"]) / n,
+        }
+
+    if intent_id == "I4":
+        seq_dists = [c["epsilon_sequence_distance"] for c in cells]
+        return {
+            "intent": "I4",
+            "n_cells": n,
+            "epsilon_sequence_distance_mean": sum(seq_dists) / n,
+            "survival_rate": sum(1 for c in cells if c["survival"]) / n,
+        }
+
+    if intent_id == "I5":
+        matches = sum(1 for c in cells if c["universality_class_match"]) / n
+        intra = [c["intra_class_l2"] for c in cells if c["intra_class_l2"] is not None]
+        return {
+            "intent": "I5",
+            "n_cells": n,
+            "universality_class_agreement_rate": matches,
+            "intra_class_l2_mean": (sum(intra) / len(intra)) if intra else 0.0,
+            "intra_class_l2_max": (max(intra) if intra else 0.0),
+        }
+
+    raise ValueError(f"unknown intent: {intent_id!r}")
+
+
 def report_for_validate_driver_profile(
     summary: dict[str, Any],
 ) -> ValidationReport:

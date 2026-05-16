@@ -335,6 +335,78 @@ def caputo_flow(
 # Laplace log evidence
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Learned translation field (v3 — BLOCK_IN §v3): small MLP forward map
+# ---------------------------------------------------------------------------
+
+def mlp_forward(
+    x: jnp.ndarray,
+    weights: Tuple[Tuple[jnp.ndarray, jnp.ndarray], ...],
+    activation: str = "tanh",
+) -> jnp.ndarray:
+    """Forward pass through a small MLP with linear output layer.
+
+    `weights` is a tuple of per-layer `(W, b)` pairs where `W` has shape
+    `(out_dim, in_dim)` (matrix-vector product `W @ x + b`). Hidden layers
+    apply the chosen elementwise nonlinearity (tanh or relu); the output
+    layer is linear.
+
+    Pure / JIT-able / differentiable in (x, weights). The v3 learned
+    translation-field shape composes this primitive through the
+    `(chit, gamma_AB, log(tau/tau_ref))` -> `(substrate_chit,
+    substrate_gamma_AB)` forward map.
+
+    Empty `weights` is an error (no architecture); the caller's bug.
+    """
+    if activation == "tanh":
+        act = jnp.tanh
+    elif activation == "relu":
+        act = lambda z: jnp.maximum(z, 0.0)  # noqa: E731
+    else:
+        raise ValueError(f"unsupported activation: {activation!r}")
+
+    n_layers = len(weights)
+    h = x
+    for i, (W, b) in enumerate(weights):
+        h = W @ h + b
+        if i < n_layers - 1:
+            h = act(h)
+    return h
+
+
+def learned_field_substrate(
+    chit: jnp.ndarray,
+    gamma_AB: jnp.ndarray,
+    tau_obs: jnp.ndarray,
+    tau_obs_ref: jnp.ndarray,
+    weights: Tuple[Tuple[jnp.ndarray, jnp.ndarray], ...],
+    activation: str = "tanh",
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Forward map (canonical -> substrate) for a learned translation field.
+
+    Input to the MLP is the 3-vector `(chit, gamma_AB, log(tau/tau_ref))`.
+    The log-ratio coordinate matches the tangent-flow parametrization
+    (`scaled_chit = chit + delta_chit * log(ratio)`), letting curators
+    train against the same tau-scaling structure other field shapes use.
+
+    At degenerate `tau_obs <= 0` or `tau_obs_ref <= 0` the log-ratio is
+    clamped to 0 (identity in the tau direction; mirrors the
+    `tangent_flow_substrate` branch).
+
+    Differentiable in all parameters via `jax.grad` / `jax.jacobian`.
+    """
+    safe_tau = jnp.where(tau_obs > 0.0, tau_obs, 1.0)
+    safe_ref = jnp.where(tau_obs_ref > 0.0, tau_obs_ref, 1.0)
+    log_ratio = jnp.where(
+        (tau_obs > 0.0) & (tau_obs_ref > 0.0),
+        jnp.log(safe_tau / safe_ref),
+        0.0,
+    )
+    x = jnp.stack([chit, gamma_AB, log_ratio])
+    y = mlp_forward(x, weights, activation=activation)
+    return y[0], y[1]
+
+
 def laplace_log_evidence(
     residual_at_map: jnp.ndarray,
     hessian: jnp.ndarray,

@@ -169,10 +169,47 @@ class TangentFlowField:
     description: Optional[str] = None
 
 
-# v1: the union the operations accept. Per the handoff §A.4 the
-# seven-operation API surface still takes "a translation field" — both
-# shapes ride the same callsites, dispatched on `field.shape`.
-AnyTranslationField = Union[TranslationField, TangentFlowField]
+@dataclass(frozen=True)
+class LearnedField:
+    """Learned translation field — small MLP forward map (v3 BLOCK_IN §v3).
+
+    Third translation-field shape alongside `lookup_table` (v0) and
+    `tangent_flow` (v1). Input is the 3-vector
+    `(chit, gamma_AB, log(tau_obs / tau_obs_ref))`; output is the 2-vector
+    `(substrate_chit, substrate_gamma_AB)`.
+
+    `weights` is a tuple of per-layer `(W, b)` pairs where each `W` is a
+    row-major matrix as a tuple-of-tuples and `b` is a 1-D tuple. The
+    architecture is implicit in the weight shapes; `architecture` mirrors
+    `[input_dim, hidden_1, ..., output_dim]` for round-trip validation
+    against the schema. Training is curator-side (mpa-conform); the solver
+    only evaluates.
+
+    `activation` controls the elementwise nonlinearity on hidden layers;
+    the output layer is linear. `rule_at_origin` pins the substrate
+    identity at the reference point (mirrors TangentFlowField's role).
+
+    Forward-compat: shipping as an optional in-repo type with a parser
+    extension. The mpa-atlas driver-profile schema bump to admit
+    `shape: "learned"` lands in a separate session (BLOCK_IN §v3 open
+    item); until that lands, curators include the learned-field block
+    under the schema's existing `additionalProperties` allowance.
+    """
+
+    direction: Literal["forward"]
+    shape: Literal["learned"]
+    rule_at_origin: TranslationRule
+    weights: tuple[tuple[tuple[tuple[float, ...], ...], tuple[float, ...]], ...]
+    architecture: tuple[int, ...]
+    activation: Literal["tanh", "relu"] = "tanh"
+    tau_obs_ref: float = 1.0
+    description: Optional[str] = None
+
+
+# v1/v3: the union the operations accept. Per the handoff §A.4 the
+# seven-operation API surface still takes "a translation field" — three
+# shapes now ride the same callsites, dispatched on `field.shape`.
+AnyTranslationField = Union[TranslationField, TangentFlowField, LearnedField]
 
 
 # ---------------------------------------------------------------------------
