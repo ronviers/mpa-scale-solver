@@ -21,7 +21,7 @@ unchanged (handoff §A.2 back-compat).
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional, Sequence, Union
 
 import numpy as np
 
@@ -459,8 +459,39 @@ def gamut_classify(
 
 
 # ---------------------------------------------------------------------------
-# Op 6: intent_map (I5 only at v0)
+# Op 6: intent_map (I1–I5; composition algebra) — RFC-S §3
 # ---------------------------------------------------------------------------
+#
+# Per RFC-S §3 the operation is the same for every intent — "scale uniformly
+# along the gamut to fit" — and the *intent* names which invariant is
+# preserved. The state-level intent operates on a single CanonicalState
+# (chit, gamma_AB, k_frust); trajectory-level invariants (persistence-profile
+# shape, contraction ordering across frames) are reported at the level
+# they live at (validate_driver_profile / tau_obs_sweep) and projected
+# here onto whatever the per-state operation can carry:
+#
+#   I1 regime-preserving   : 5-bucket regime ∧ sign(gamma_AB) ∧ k_frust
+#                            (the strongest constraint; subsumes I3/I4/I5
+#                            on a single state)
+#   I2 drive-faithful      : no adjustment; out-of-gamut flagged as
+#                            completeness sacrifice (per §3 "out-of-gamut
+#                            rejected, diagnostic-listed")
+#   I3 capacity-preserving : capacity class (|chit| >= 0.7 deep vs shallow)
+#                            ∧ k_frust
+#   I4 persistence-preserv : sign(gamma_AB) (contraction-ordering proxy at
+#                            the state level)
+#   I5 signature-preserving: 5-bucket regime label (v0/v1 contract;
+#                            universality-class agreement per §5)
+#
+# Each handler returns (mapped, sacrifice). The sacrifice dict carries:
+#   intent, preserved_invariant, invariant_preserved (bool),
+#   delta_chit, delta_gamma_AB
+# plus intent-specific diagnostic keys. I5's existing v0/v1 keys
+# (regime_preserved, original_regime, mapped_regime) are preserved
+# verbatim for back-compat.
+
+_INTENT_IDS = ("I1", "I2", "I3", "I4", "I5")
+
 
 def intent_map(
     out_of_gamut: CanonicalState,
@@ -471,36 +502,329 @@ def intent_map(
     """Map an out-of-gamut canonical state to in-gamut per the chosen intent.
 
     Per RFC-S §3: scale uniformly along the gamut to fit, preserving the
-    named invariant. v0 implements only I5 (signature-preserving).
+    named invariant. v2.3 implements all five intents (cut d). The state-
+    level invariant for each intent is documented in the module header;
+    sacrifice records carry `invariant_preserved` plus intent-specific
+    diagnostic keys.
 
     Returns (mapped_state, sacrifice_record).
     """
-    if intent_id not in {"I1", "I2", "I3", "I4", "I5"}:
-        raise ValueError(f"unknown intent: {intent_id!r}")
-    if intent_id != "I5":
-        raise NotImplementedError(
-            f"intent {intent_id} not implemented in v0 (I5-only)"
+    if intent_id == "I1":
+        return _intent_i1(out_of_gamut, tau_obs, gamut)
+    if intent_id == "I2":
+        return _intent_i2(out_of_gamut, tau_obs, gamut)
+    if intent_id == "I3":
+        return _intent_i3(out_of_gamut, tau_obs, gamut)
+    if intent_id == "I4":
+        return _intent_i4(out_of_gamut, tau_obs, gamut)
+    if intent_id == "I5":
+        return _intent_i5(out_of_gamut, tau_obs, gamut)
+    raise ValueError(f"unknown intent: {intent_id!r}")
+
+
+def intent_compose(
+    state: CanonicalState,
+    tau_obs: float,
+    gamut: GamutSpec,
+    intents: Sequence[str],
+) -> tuple[CanonicalState, list[dict[str, Any]]]:
+    """Apply intents sequentially per RFC-S §3 composition algebra.
+
+    Each intent maps its input to in-gamut preserving its named invariant.
+    Sacrifice records accumulate one per intent (in application order).
+
+    Per §3: "Two adjacent intents compose iff their preserved-invariant
+    sets union without conflict. I2 (drive-faithful) does not compose
+    with adjusting intents." This function enforces the I2 rule by
+    rejecting any composition containing I2 alongside other intents.
+    Beyond that, the union-without-conflict check is evidential: it
+    surfaces in each sacrifice's `invariant_preserved` flag — if a later
+    intent could not preserve its invariant on the output of an earlier
+    intent, the conflict is observable in the sacrifice trace.
+
+    Returns (mapped_state, sacrifices). For an empty `intents` sequence,
+    raises ValueError.
+    """
+    intents = tuple(intents)
+    if not intents:
+        raise ValueError("intent_compose requires at least one intent")
+    for iid in intents:
+        if iid not in _INTENT_IDS:
+            raise ValueError(f"unknown intent: {iid!r}")
+    if "I2" in intents and len(intents) > 1:
+        raise ValueError(
+            "I2 (drive-faithful) does not compose with adjusting intents "
+            "(RFC-S §3). Call intent_map(intent_id='I2') directly."
         )
 
-    original_regime = regime_at(out_of_gamut, tau_obs).regime
-    chit = float(np.clip(
-        out_of_gamut.chit, gamut.chit_range[0], gamut.chit_range[1]
-    ))
-    gamma = float(np.clip(
-        out_of_gamut.gamma_AB, gamut.gamma_AB_range[0], gamut.gamma_AB_range[1]
-    ))
-    mapped = CanonicalState(chit=chit, gamma_AB=gamma, k_frust=out_of_gamut.k_frust)
-    mapped_regime = regime_at(mapped, tau_obs).regime
+    sacrifices: list[dict[str, Any]] = []
+    current = state
+    for iid in intents:
+        current, sac = intent_map(current, tau_obs, gamut, iid)
+        sacrifices.append(sac)
+    return current, sacrifices
 
-    sacrifice = {
+
+# ---- intent helpers --------------------------------------------------------
+
+def _clamp_to_gamut(state: CanonicalState, gamut: GamutSpec) -> CanonicalState:
+    return CanonicalState(
+        chit=float(np.clip(state.chit, gamut.chit_range[0], gamut.chit_range[1])),
+        gamma_AB=float(np.clip(state.gamma_AB, gamut.gamma_AB_range[0], gamut.gamma_AB_range[1])),
+        k_frust=state.k_frust,
+    )
+
+
+# 5-bucket regime intervals on chit (matches gfdr_model.vertex_regime).
+# Open intervals on the inside; the boundaries belong to the deeper bucket
+# per `vertex_regime`'s `chit >= 0.7` form (inclusive of 0.7 / 0.2).
+_REGIME_CHIT_INTERVALS: dict[str, tuple[float, float]] = {
+    "deep_c":     (0.7, float("inf")),
+    "c_near_s":   (0.2, 0.7),
+    "s_critical": (-0.2, 0.2),
+    "r_near_s":   (-0.7, -0.2),
+    "deep_r":     (float("-inf"), -0.7),
+}
+
+
+def _nearest_in_gamut_chit_for_regime(
+    orig_chit: float,
+    regime: str,
+    chit_range: tuple[float, float],
+) -> Optional[float]:
+    """Nearest in-gamut chit preserving `regime`, or None if unreachable.
+
+    The regime intervals are half-open on the deep side per
+    `vertex_regime`'s `chit >= threshold` form. We treat each interval as
+    closed for clipping purposes (vertex_regime's boundary inclusion makes
+    the endpoint a valid representative of the regime).
+    """
+    lo_r, hi_r = _REGIME_CHIT_INTERVALS[regime]
+    lo_g, hi_g = chit_range
+    lo, hi = max(lo_r, lo_g), min(hi_r, hi_g)
+    if lo > hi:
+        return None
+    if lo == hi:
+        return float(lo)
+    return float(np.clip(orig_chit, lo, hi))
+
+
+def _sign(x: float) -> int:
+    if x > 0.0:
+        return 1
+    if x < 0.0:
+        return -1
+    return 0
+
+
+def _capacity_class(chit: float) -> str:
+    """Capacity bucket: deep (|chit| >= 0.7) vs shallow.
+
+    Deep states sustain a structural capacity (deep_c / deep_r) that the
+    near-s / s_critical states do not — the |chit| = 0.7 threshold is
+    the framework's fixed-point-stability boundary (gfdr_model.vertex_regime).
+    """
+    return "deep" if abs(chit) >= 0.7 else "shallow"
+
+
+def _intent_i1(
+    state: CanonicalState, tau_obs: float, gamut: GamutSpec,
+) -> tuple[CanonicalState, dict[str, Any]]:
+    """I1 regime-preserving: 5-bucket regime ∧ sign(gamma_AB) ∧ k_frust."""
+    _ = tau_obs
+    orig_regime = vertex_regime(state.chit)
+    orig_sign = _sign(state.gamma_AB)
+
+    # First try regime-preserving clamp on chit.
+    target_chit = _nearest_in_gamut_chit_for_regime(
+        state.chit, orig_regime, gamut.chit_range,
+    )
+    regime_preserved = target_chit is not None
+    chit_out = target_chit if regime_preserved else float(np.clip(
+        state.chit, gamut.chit_range[0], gamut.chit_range[1],
+    ))
+
+    # Then try sign-preserving clamp on gamma_AB.
+    gamma_out, sign_preserved = _sign_preserving_clamp(
+        state.gamma_AB, orig_sign, gamut.gamma_AB_range,
+    )
+
+    mapped = CanonicalState(chit=chit_out, gamma_AB=gamma_out, k_frust=state.k_frust)
+    invariant_preserved = regime_preserved and sign_preserved
+    mapped_regime = vertex_regime(chit_out)
+    sac: dict[str, Any] = {
+        "intent": "I1",
+        "preserved_invariant": "regime ∧ sign(gamma_AB) ∧ k_frust",
+        "invariant_preserved": invariant_preserved,
+        "delta_chit": chit_out - state.chit,
+        "delta_gamma_AB": gamma_out - state.gamma_AB,
+        "regime_preserved": regime_preserved,
+        "gamma_AB_sign_preserved": sign_preserved,
+        "k_frust_preserved": True,  # state.k_frust copied verbatim
+        "original_regime": orig_regime,
+        "mapped_regime": mapped_regime,
+        "original_gamma_AB_sign": orig_sign,
+        "mapped_gamma_AB_sign": _sign(gamma_out),
+    }
+    return mapped, sac
+
+
+def _intent_i2(
+    state: CanonicalState, tau_obs: float, gamut: GamutSpec,
+) -> tuple[CanonicalState, dict[str, Any]]:
+    """I2 drive-faithful: no adjustment; flag completeness if out-of-gamut.
+
+    Per RFC-S §3: "Completeness sacrificed (out-of-gamut rejected,
+    diagnostic-listed)." The mapped state equals the original; the
+    sacrifice record lists which axes are out-of-gamut.
+    """
+    _ = tau_obs
+    chit_oog = not (gamut.chit_range[0] <= state.chit <= gamut.chit_range[1])
+    gamma_oog = not (gamut.gamma_AB_range[0] <= state.gamma_AB <= gamut.gamma_AB_range[1])
+    in_gamut = not (chit_oog or gamma_oog)
+    out_of_gamut_axes: list[str] = []
+    if chit_oog:
+        out_of_gamut_axes.append("chit")
+    if gamma_oog:
+        out_of_gamut_axes.append("gamma_AB")
+    sac = {
+        "intent": "I2",
+        "preserved_invariant": "exact_drive_parameters",
+        "invariant_preserved": in_gamut,
+        "delta_chit": 0.0,
+        "delta_gamma_AB": 0.0,
+        "out_of_gamut_rejected": not in_gamut,
+        "out_of_gamut_axes": tuple(out_of_gamut_axes),
+    }
+    return state, sac
+
+
+def _intent_i3(
+    state: CanonicalState, tau_obs: float, gamut: GamutSpec,
+) -> tuple[CanonicalState, dict[str, Any]]:
+    """I3 capacity-preserving: capacity class (|chit|>=0.7 deep) ∧ k_frust."""
+    _ = tau_obs
+    orig_capacity = _capacity_class(state.chit)
+    clamped = _clamp_to_gamut(state, gamut)
+    mapped_capacity = _capacity_class(clamped.chit)
+    # If naive clamp drops a deep state to shallow, try the in-gamut
+    # endpoint on the same side that retains deep.
+    if orig_capacity == "deep" and mapped_capacity == "shallow":
+        if state.chit >= 0.7 and gamut.chit_range[1] >= 0.7:
+            clamped = CanonicalState(
+                chit=float(min(state.chit, gamut.chit_range[1])),
+                gamma_AB=clamped.gamma_AB, k_frust=state.k_frust,
+            )
+            mapped_capacity = _capacity_class(clamped.chit)
+        elif state.chit <= -0.7 and gamut.chit_range[0] <= -0.7:
+            clamped = CanonicalState(
+                chit=float(max(state.chit, gamut.chit_range[0])),
+                gamma_AB=clamped.gamma_AB, k_frust=state.k_frust,
+            )
+            mapped_capacity = _capacity_class(clamped.chit)
+    capacity_preserved = orig_capacity == mapped_capacity
+    sac = {
+        "intent": "I3",
+        "preserved_invariant": "capacity_class ∧ k_frust",
+        "invariant_preserved": capacity_preserved,  # k_frust copy is vacuous
+        "delta_chit": clamped.chit - state.chit,
+        "delta_gamma_AB": clamped.gamma_AB - state.gamma_AB,
+        "capacity_class": orig_capacity,
+        "mapped_capacity_class": mapped_capacity,
+        "k_frust": state.k_frust,
+        "k_frust_preserved": True,
+    }
+    return clamped, sac
+
+
+def _intent_i4(
+    state: CanonicalState, tau_obs: float, gamut: GamutSpec,
+) -> tuple[CanonicalState, dict[str, Any]]:
+    """I4 persistence-preserving: sign(gamma_AB) (contraction-ordering proxy)."""
+    _ = tau_obs
+    clamped = _clamp_to_gamut(state, gamut)
+    orig_sign = _sign(state.gamma_AB)
+    gamma_out, sign_preserved = _sign_preserving_clamp(
+        state.gamma_AB, orig_sign, gamut.gamma_AB_range,
+    )
+    mapped = CanonicalState(chit=clamped.chit, gamma_AB=gamma_out, k_frust=state.k_frust)
+    sac = {
+        "intent": "I4",
+        "preserved_invariant": "sign(gamma_AB)",
+        "invariant_preserved": sign_preserved,
+        "delta_chit": mapped.chit - state.chit,
+        "delta_gamma_AB": mapped.gamma_AB - state.gamma_AB,
+        "original_gamma_AB_sign": orig_sign,
+        "mapped_gamma_AB_sign": _sign(gamma_out),
+    }
+    return mapped, sac
+
+
+def _intent_i5(
+    state: CanonicalState, tau_obs: float, gamut: GamutSpec,
+) -> tuple[CanonicalState, dict[str, Any]]:
+    """I5 signature-preserving: 5-bucket regime label.
+
+    v0/v1 contract: naive clamp on both axes; report `regime_preserved`
+    based on the 5-bucket vertex_regime comparison. Per RFC-S §5 metric,
+    I5 is universality-class agreement; the 5-bucket regime is the
+    universality-class label at the operational layer (each regime
+    carries its own FDR-signature exponents per cdv1).
+    """
+    _ = tau_obs
+    original_regime = vertex_regime(state.chit)
+    chit_out = float(np.clip(state.chit, gamut.chit_range[0], gamut.chit_range[1]))
+    gamma_out = float(np.clip(state.gamma_AB, gamut.gamma_AB_range[0], gamut.gamma_AB_range[1]))
+    mapped = CanonicalState(chit=chit_out, gamma_AB=gamma_out, k_frust=state.k_frust)
+    mapped_regime = vertex_regime(chit_out)
+    regime_preserved = original_regime == mapped_regime
+    sac = {
         "intent": "I5",
-        "delta_chit": chit - out_of_gamut.chit,
-        "delta_gamma_AB": gamma - out_of_gamut.gamma_AB,
-        "regime_preserved": original_regime == mapped_regime,
+        # v1 keys (preserved verbatim for back-compat):
+        "delta_chit": chit_out - state.chit,
+        "delta_gamma_AB": gamma_out - state.gamma_AB,
+        "regime_preserved": regime_preserved,
         "original_regime": original_regime,
         "mapped_regime": mapped_regime,
+        # v2.3 uniform keys:
+        "preserved_invariant": "regime_label",
+        "invariant_preserved": regime_preserved,
     }
-    return mapped, sacrifice
+    return mapped, sac
+
+
+def _sign_preserving_clamp(
+    value: float,
+    orig_sign: int,
+    rng: tuple[float, float],
+) -> tuple[float, bool]:
+    """Clamp `value` to `rng` preserving sign.
+
+    Returns (clamped, sign_preserved). If `orig_sign == 0`, returns the
+    naive clamp (zero has no sign to preserve). Otherwise prefers the
+    nearest in-range value with the same sign; falls back to the naive
+    clamp with `sign_preserved=False` when the gamut excludes the sign
+    entirely.
+    """
+    lo, hi = rng
+    if orig_sign == 0:
+        return float(np.clip(value, lo, hi)), True
+    if orig_sign > 0:
+        if hi <= 0:
+            return float(np.clip(value, lo, hi)), False
+        sub_lo = max(lo, 0.0)
+        # Strictly preserving sign means strictly positive. If the gamut
+        # admits positive values, clamp to (0, hi]; if the lower bound is
+        # exactly 0 the strict-sign clip lands at the smallest representable
+        # positive value above 0 within the range — but we treat the
+        # in-gamut endpoint 0 as the boundary and accept it (vertex
+        # interval semantics).
+        return float(np.clip(value, sub_lo, hi)), True
+    # orig_sign < 0
+    if lo >= 0:
+        return float(np.clip(value, lo, hi)), False
+    sub_hi = min(hi, 0.0)
+    return float(np.clip(value, lo, sub_hi)), True
 
 
 # ---------------------------------------------------------------------------
@@ -522,13 +846,17 @@ def validate_driver_profile(
         expected_substrate: SubstrateState | None (optional; auto-computed
             by apply_translation when None)
 
-    Returns a per-entry residual record plus aggregate stats. v0 reports I5
-    (signature-preserving) regime agreement as the universality-class check.
+    Returns a per-entry residual record plus aggregate stats. The metric
+    is 5-bucket regime agreement at every intent for v2.3 — that is the
+    I5 universality-class metric per RFC-S §5 and a permissible coarsening
+    for I1/I3/I5 (whose state-level invariants reduce to / subsume regime
+    agreement). I2's drive-faithful invariant and I4's contraction-
+    ordering trajectory metric per §5 will land alongside cross-substrate
+    operations in v3; until then v2.3 reports the same regime-agreement
+    surface for every intent id, with intent recorded for traceability.
     """
-    if intent_id != "I5":
-        raise NotImplementedError(
-            f"validate_driver_profile intent {intent_id} not implemented in v0"
-        )
+    if intent_id not in _INTENT_IDS:
+        raise ValueError(f"unknown intent: {intent_id!r}")
 
     index = TranslationFieldIndex(field)
     forward_residuals: list[float] = []
@@ -855,6 +1183,27 @@ def intent_map_wrapped(
     report = _validation.report_for_intent_map(out_of_gamut, mapped, sacrifice)
     prov = make_provenance("intent_map")
     return OperationOutput(value=(mapped, sacrifice), validation=report, provenance=prov)
+
+
+def intent_compose_wrapped(
+    state: CanonicalState,
+    tau_obs: float,
+    gamut: GamutSpec,
+    intents: Sequence[str],
+) -> OperationOutput[tuple[CanonicalState, list[dict[str, Any]]]]:
+    """Wrapped variant of `intent_compose` (v2.3 — RFC-S §3 composition).
+
+    Validation aggregates the per-intent `invariant_preserved` flags:
+    `k_frust_invariant` is True only when every intent in the chain
+    preserved its invariant. Per-intent failures are listed in notes.
+    """
+    mapped, sacrifices = intent_compose(state, tau_obs, gamut, intents)
+    report = _validation.report_for_intent_compose(state, mapped, sacrifices)
+    prov = make_provenance(
+        "intent_compose",
+        notes=(f"intents={tuple(intents)}",),
+    )
+    return OperationOutput(value=(mapped, sacrifices), validation=report, provenance=prov)
 
 
 def validate_driver_profile_wrapped(

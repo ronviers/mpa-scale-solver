@@ -343,7 +343,7 @@ class TestGamutClassify:
 
 
 # ---------------------------------------------------------------------------
-# intent_map (I5 only at v0)
+# intent_map (I5 v1 contract — positive coverage; I1–I4 in test_intents.py)
 # ---------------------------------------------------------------------------
 
 class TestIntentMap:
@@ -366,12 +366,6 @@ class TestIntentMap:
         assert sacrifice["regime_preserved"] is False
         assert sacrifice["original_regime"] == "deep_c"
         assert sacrifice["mapped_regime"] == "c_near_s"
-
-    @pytest.mark.parametrize("intent", ["I1", "I2", "I3", "I4"])
-    def test_i1_to_i4_not_implemented(self, intent):
-        gamut = GamutSpec(chit_range=(-1.0, 1.0), gamma_AB_range=(-1.0, 1.0))
-        with pytest.raises(NotImplementedError):
-            intent_map(CanonicalState(chit=0.0, gamma_AB=0.0), 1.0, gamut, intent)
 
     def test_unknown_intent_raises(self):
         gamut = GamutSpec(chit_range=(-1.0, 1.0), gamma_AB_range=(-1.0, 1.0))

@@ -42,6 +42,7 @@ from . import jax_pytree  # noqa: F401 — side-effect: PyTree registration
 from .banach import BanachSubstrate
 from .jax_core import (
     banach_state,
+    caputo_flow,
     laplace_covariance_from_jacobian,
     tangent_flow_canonical,
     tangent_flow_canonical_inverse,
@@ -98,26 +99,51 @@ def flow_diff(
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Differentiable continuous-form flow.
 
-    Mirrors `flow.flow()` dispatch on `field.shape` / `flow_kind`:
+    Mirrors `flow.flow()` dispatch:
+      - tangent_flow + `beta_mem < 1` -> v2.4 Caputo (Prony sum).
       - tangent_flow + `flow_kind == 'banach_exponential'` -> Banach decay.
       - tangent_flow + generic -> ScalingRule with nu as tau_obs.
-      - lookup_table -> NotImplementedError (matches v1).
+      - lookup_table -> NotImplementedError.
 
     Returns `(chit, gamma_AB)` as JAX 0-d arrays.
     """
     if isinstance(field, TranslationField):
         raise NotImplementedError(
-            "flow_diff() on lookup_table fields is deferred to v2.x "
-            "(no explicit generator at v1; fractional-RG generalization is v2.4)."
+            "flow_diff() on lookup_table fields: lookup tables sample the "
+            "flow; no explicit generator. Use a tangent_flow field "
+            "(generic, banach_exponential, or Caputo) for differentiable flow."
         )
     if not isinstance(field, TangentFlowField):
         raise TypeError(f"unsupported translation field type: {type(field).__name__}")
 
     refinement = field.scaling.refinement or {}
+    beta_mem = float(refinement.get("beta_mem", 1.0))
     flow_kind = refinement.get("flow_kind") if isinstance(refinement, dict) else None
     nu_jax = jnp.asarray(nu, dtype=jnp.float64)
     chit_0 = jnp.asarray(canonical_initial.chit, dtype=jnp.float64)
     gamma_0 = jnp.asarray(canonical_initial.gamma_AB, dtype=jnp.float64)
+
+    if beta_mem < 1.0:
+        prony_terms = refinement.get("prony_terms")
+        if not prony_terms:
+            raise ValueError(
+                "beta_mem < 1.0 requires prony_terms in refinement "
+                "(curator-supplied Mittag-Leffler approximation)."
+            )
+        amps = jnp.asarray(
+            [float(a) for a, _ in prony_terms], dtype=jnp.float64,
+        )
+        decays = jnp.asarray(
+            [float(b) for _, b in prony_terms], dtype=jnp.float64,
+        )
+        lambda_chit = jnp.asarray(refinement.get("lambda_chit", 1.0), dtype=jnp.float64)
+        lambda_gamma = jnp.asarray(refinement.get("lambda_gamma", 1.0), dtype=jnp.float64)
+        return caputo_flow(
+            chit_0=chit_0, gamma_AB_0=gamma_0,
+            lambda_chit=lambda_chit, lambda_gamma=lambda_gamma,
+            nu=nu_jax,
+            prony_amplitudes=amps, prony_decays=decays,
+        )
 
     if flow_kind == "banach_exponential":
         lambda_chit = jnp.asarray(refinement.get("lambda_chit", 1.0), dtype=jnp.float64)

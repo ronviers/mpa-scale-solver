@@ -71,6 +71,9 @@ from .operations import (
     # v2.1 Bayesian inversion
     forward_sweep_invert_posterior,
     forward_sweep_invert_posterior_wrapped,
+    # v2.3 intent composition
+    intent_compose,
+    intent_compose_wrapped,
 )
 from .flow import flow
 from .banach import BanachSubstrate, build_sidecar_for_banach
@@ -140,6 +143,9 @@ __all__ = [
     # operations — v2.1 (Bayesian inversion)
     "forward_sweep_invert_posterior",
     "forward_sweep_invert_posterior_wrapped",
+    # operations — v2.3 (intent composition)
+    "intent_compose",
+    "intent_compose_wrapped",
     # v1 new functions / modules
     "flow",
     "BanachSubstrate",

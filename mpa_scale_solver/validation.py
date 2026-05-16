@@ -192,21 +192,69 @@ def report_for_intent_map(
     mapped: CanonicalState,
     sacrifice: dict[str, Any],
 ) -> ValidationReport:
-    """I5 invariance: regime preservation flags `k_frust_invariant`."""
+    """Intent invariance: the intent's named invariant flags `k_frust_invariant`.
+
+    Reads `invariant_preserved` from the sacrifice dict (v2.3 uniform key);
+    falls back to `regime_preserved` for v1-shaped I5 sacrifice dicts.
+    The `k_frust_invariant` ValidationReport field is repurposed here as
+    the intent-invariant pass/fail (v1 convention extended by v2.3).
+    """
     notes: list[str] = []
     ac_orig, n_orig = check_asymptotic_closure_canonical(original)
     ac_map, n_map = check_asymptotic_closure_canonical(mapped)
     notes.extend(n_orig)
     notes.extend(n_map)
-    regime_preserved = bool(sacrifice.get("regime_preserved", True))
-    if not regime_preserved:
-        notes.append(
-            f"I5 regime not preserved: "
-            f"{sacrifice.get('original_regime')} -> {sacrifice.get('mapped_regime')}"
+    invariant_preserved = bool(sacrifice.get(
+        "invariant_preserved", sacrifice.get("regime_preserved", True),
+    ))
+    if not invariant_preserved:
+        intent = sacrifice.get("intent", "?")
+        invariant_name = sacrifice.get(
+            "preserved_invariant",
+            "regime_label" if intent == "I5" else "?",
         )
+        if intent == "I5":
+            notes.append(
+                f"I5 regime not preserved: "
+                f"{sacrifice.get('original_regime')} -> {sacrifice.get('mapped_regime')}"
+            )
+        else:
+            notes.append(f"{intent} did not preserve {invariant_name}")
     return ValidationReport(
         asymptotic_closure_compliant=ac_orig and ac_map,
-        k_frust_invariant=regime_preserved,
+        k_frust_invariant=invariant_preserved,
+        round_trip_residual=None,
+        notes=tuple(notes),
+    )
+
+
+def report_for_intent_compose(
+    original: CanonicalState,
+    mapped: CanonicalState,
+    sacrifices: Sequence[dict[str, Any]],
+) -> ValidationReport:
+    """Composition: `k_frust_invariant` True iff every intent preserved its invariant."""
+    notes: list[str] = []
+    ac_orig, n_orig = check_asymptotic_closure_canonical(original)
+    ac_map, n_map = check_asymptotic_closure_canonical(mapped)
+    notes.extend(n_orig)
+    notes.extend(n_map)
+    all_preserved = True
+    for sac in sacrifices:
+        ok = bool(sac.get(
+            "invariant_preserved", sac.get("regime_preserved", True),
+        ))
+        if not ok:
+            all_preserved = False
+            intent = sac.get("intent", "?")
+            invariant_name = sac.get(
+                "preserved_invariant",
+                "regime_label" if intent == "I5" else "?",
+            )
+            notes.append(f"{intent} did not preserve {invariant_name}")
+    return ValidationReport(
+        asymptotic_closure_compliant=ac_orig and ac_map,
+        k_frust_invariant=all_preserved,
         round_trip_residual=None,
         notes=tuple(notes),
     )

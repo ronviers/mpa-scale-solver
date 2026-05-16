@@ -2,20 +2,21 @@
 
 Grounded by v9_receipts §RG closure (Wilson-Kadanoff structural equivalence,
 closed by composition) in Markovian scope (beta_mem = 1). The Banach
-substrate sits exactly at the Markovian boundary by construction; that is
-where continuous flow is in proven scope at v1.
+substrate sits exactly at the Markovian boundary by construction.
 
-v1 dispatch is on `field.shape`:
+Dispatch on `field.shape` and the refinement dict:
 
-- `tangent_flow`: closed-form via the ScalingRule (and the refinement
-  dict's optional `flow_kind` for substrate-specific closed forms like
-  the Banach exponential decay).
-- `lookup_table`: deferred to v2 (lookup tables provide samples, not an
-  explicit generator; reconstructing the flow from a table requires the
-  fractional-RG generalization that lands at v2 alongside JAX).
-
-Non-Markovian Caputo (`beta_mem < 1`) is v2 (fractional-RG generalization
-per v9_receipts §RG closure substrate-scope note).
+- `tangent_flow` + `beta_mem < 1`: v2.4 non-Markovian Caputo path. The
+  flow generator is the Mittag-Leffler kernel `E_β(-λν)` approximated by
+  the curator-supplied Prony sum `Σ_k a_k exp(-b_k x)` riding the
+  refinement dict as `prony_terms`. β = 1 with single-term Prony
+  `[(1.0, 1.0)]` reduces byte-identically to the Markovian path.
+- `tangent_flow` + `flow_kind == 'banach_exponential'`: v1 Markovian
+  exponential decay (Banach Q1 normalization).
+- `tangent_flow` + generic: v1 generic tangent-flow (ScalingRule with
+  nu treated as tau_obs).
+- `lookup_table`: NotImplementedError (lookup tables provide samples,
+  not an explicit generator).
 """
 
 from __future__ import annotations
@@ -71,23 +72,21 @@ def _flow_tangent(
 ) -> CanonicalState:
     """Tangent-flow closed form.
 
-    Banach-exponential refinement uses the exp-decay form spelled out in
-    Q1 of the v1 build session:
+    v2.4 Caputo branch fires when `refinement['beta_mem'] < 1.0`; the
+    curator-supplied `prony_terms` approximate the Mittag-Leffler kernel.
+    Per-axis lambdas (`lambda_chit`, `lambda_gamma`) scale the Prony
+    decay rates. Otherwise the v1 branches apply:
 
-        chit(nu)    = chit_0 * exp(-lambda_chit * nu)
-        gamma_AB(nu) = gamma_AB_0 * exp(-lambda_gamma * nu)
-
-    Default lambdas = 1.0 correspond to the v1 normalization (spectral-gap
-    eigenvalue exp(-1) of ln C; v2 derives these from `flow_spectrum`).
-
-    Generic tangent-flow without a refinement uses the scaling rule
-    treating nu as tau_obs. For the canonical default delta_gamma =
-    delta_chit = 0, this is identity (the canonical state does not flow
-    under the translation; the migration happens entirely in the substrate
-    projection).
+      - `flow_kind == 'banach_exponential'`: exp-decay form (Banach Q1
+        normalization).
+      - generic: ScalingRule with `nu` treated as `tau_obs`.
     """
     refinement = field.scaling.refinement or {}
+    beta_mem = float(refinement.get("beta_mem", 1.0))
     flow_kind = refinement.get("flow_kind") if isinstance(refinement, dict) else None
+
+    if beta_mem < 1.0:
+        return _flow_caputo(canonical_initial, nu, refinement)
 
     if flow_kind == "banach_exponential":
         lambda_chit = float(refinement.get("lambda_chit", 1.0))
@@ -107,5 +106,40 @@ def _flow_tangent(
     return CanonicalState(
         chit=canonical_initial.chit + rule.delta_chit * math.log(ratio),
         gamma_AB=canonical_initial.gamma_AB * (ratio ** rule.delta_gamma),
+        k_frust=canonical_initial.k_frust,
+    )
+
+
+def _flow_caputo(
+    canonical_initial: CanonicalState,
+    nu: float,
+    refinement: dict,
+) -> CanonicalState:
+    """v2.4 non-Markovian Caputo flow via Prony sum-of-exponentials.
+
+        chit(ν)     = chit_0     * Σ_k a_k exp(-b_k λ_chit  ν)
+        gamma_AB(ν) = gamma_AB_0 * Σ_k a_k exp(-b_k λ_gamma ν)
+
+    `prony_terms` is a list of `(amplitude, decay-rate)` tuples
+    pre-fit by the curator (mpa-conform's curator path). The v2.4 solver
+    consumes them; on-the-fly Mittag-Leffler fitting is a curator-path
+    job.
+
+    Missing `prony_terms` raises ValueError — `beta_mem < 1` without an
+    accompanying kernel is a malformed refinement.
+    """
+    prony_terms = refinement.get("prony_terms")
+    if not prony_terms:
+        raise ValueError(
+            "beta_mem < 1.0 requires prony_terms in refinement "
+            "(curator-supplied Mittag-Leffler approximation)."
+        )
+    lambda_chit = float(refinement.get("lambda_chit", 1.0))
+    lambda_gamma = float(refinement.get("lambda_gamma", 1.0))
+    chit_kernel = sum(a * math.exp(-b * lambda_chit * nu) for a, b in prony_terms)
+    gamma_kernel = sum(a * math.exp(-b * lambda_gamma * nu) for a, b in prony_terms)
+    return CanonicalState(
+        chit=canonical_initial.chit * chit_kernel,
+        gamma_AB=canonical_initial.gamma_AB * gamma_kernel,
         k_frust=canonical_initial.k_frust,
     )

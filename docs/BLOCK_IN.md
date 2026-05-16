@@ -1,14 +1,14 @@
-# mpa-scale-solver — v2→v6 block-in handoff
+# mpa-scale-solver — v3→v6 block-in handoff
 
-Self-evolving trajectory handoff. v1.0.0 shipped 2026-05-16 (consumed
-end-to-end by mpa-conform v0.2). v2.0.0 shipped 2026-05-16 (BLOCK_IN
-§v2 cut (a) — JAX foundation + differentiability). v2.1.0 shipped
-2026-05-16 (cut (b) — Bayesian inversion via Laplace approximation).
-Cut (c) "N-mode generalization" cancelled 2026-05-16 — premise
-overturned by framework cross-check; the 2-mode CanonicalState is
-the framework's universal canonical representation, not a 2-mode-
-as-N=2-special-case (see §v2.2-cancelled). What remains: v2.3
-(I1–I4 intents), v2.4 (Caputo flow), → v3 → v4 → v5 → v6.
+Self-evolving trajectory handoff. v1 + v2 shipped 2026-05-16: v1.0.0
+(continuous flow + Banach + sidecar), v2.0.0 (JAX foundation, cut a),
+v2.1.0 (Bayesian inversion via Laplace, cut b), v2.3.0 (full I1–I5
+intents + composition, cut d), v2.4.0 (non-Markovian Caputo flow via
+Prony, cut e). Cut (c) "N-mode generalization" cancelled 2026-05-16 —
+premise overturned by framework cross-check; the 2-mode CanonicalState
+is the framework's universal canonical representation, not a
+2-mode-as-N=2-special-case (see §v2.2-cancelled tombstone below).
+What remains: v3 → v4 → v5 → v6.
 
 This document is the single brief that carries from one session to the
 next. It is **not** a roadmap — sequencing lives in
@@ -47,21 +47,17 @@ always — refine in place).
 
 | Version | Theme | Depends on |
 |---|---|---|
-| v1 | Continuous flow + Banach + sidecar + per-call validation | — (shipped) |
-| v2.0 | JAX foundation + differentiability (BLOCK_IN cut a) | v1 (shipped) |
-| v2.1 | Bayesian inversion (Laplace around MAP) (cut b) | v2.0 (shipped) |
-| ~~v2.2~~ | ~~N-mode generalization (cut c)~~ — cancelled 2026-05-16; framework finding folded into §v2.2-cancelled tombstone | — |
-| **v2.3** | Full I1–I4 intents + composition algebra (cut d) | v2.0 |
-| **v2.4** | Non-Markovian Caputo flow (β_mem < 1) via Prony (cut e) | v2.0 |
-| **v3** | Cross-substrate operations + active learning + MCP server + learned translation-field form | v2.* (active learning prefers v2.1's posteriors) |
+| v1–v2.4 | Foundation, JAX, Bayesian, intents, Caputo — all shipped 2026-05-16 (see README §Session Log) | — (shipped) |
+| ~~v2.2~~ | ~~N-mode generalization (cut c)~~ — cancelled 2026-05-16; tombstone retained below | — |
+| **v3** | Cross-substrate operations + active learning + MCP server + learned translation-field form | v2.* (active learning prefers v2.1's posteriors; per-intent round-trip metrics in `validate_driver_profile` tightened here per RFC-S §5) |
 | **v4** | Streaming / online operation + symbolic query interface + notebook ergonomics | v3 (or v2.* if v3 deferred) |
 | **v5** | Continuous Banach self-test cadence + sensitivity backprop + gradient-based inversion replacing grid where invertible | v2.0 (v3/v4 optional) |
 | **v6** | One-shot native port (Rust or C++). Zero new features. Per-seed reproducibility against the v5 Python. | v5 |
 
 Sequencing is the user's call per ROADMAP. The dependency column is
-the *minimum* — v5 can ship as soon as v2.0 lands if v2.3 / v2.4 and
-v3 / v4 are deferred (sensitivity_backprop / gradient-based inversion
-only need the JAX foundation, not the higher v2.x slices).
+the *minimum* — v5 can ship as soon as v2.0 lands if v3 / v4 are
+deferred (sensitivity_backprop / gradient-based inversion only need
+the JAX foundation that landed in v2.0).
 
 ---
 
@@ -107,50 +103,7 @@ follow-on session, not part of the scale-solver release.
 
 ---
 
-## §v2.3 / §v2.4 — remaining v2 cuts (I1–I4, Caputo)
-
-v2.0 (BLOCK_IN cut a) shipped the JAX foundation. v2.1 (cut b)
-shipped Bayesian inversion via Laplace approximation. Cut (c) was
-cancelled — see §v2.2-cancelled tombstone. Cuts (d) and (e) remain
-as independent v2.x slices, each one its own session. They build
-on the v2.0/v2.1 surface rather than reinventing it.
-
-**Foundation that landed at v2.0 (do not re-do):**
-
-- `mpa_scale_solver.jax_core` — pure JAX math primitives, float64
-  enabled, JIT-able and differentiable: `tangent_flow_substrate`,
-  `tangent_flow_canonical_inverse`, `tangent_flow_canonical`,
-  `banach_state`, `lookup_squared_distance`,
-  `tangent_flow_inversion_residual`,
-  `laplace_covariance_from_jacobian`, `laplace_covariance_from_hessian`,
-  `laplace_log_evidence`. This is the single math source the v6 native
-  port reads as reference.
-- `mpa_scale_solver.jax_ops` — consumer surface returning JAX arrays:
-  `tangent_flow_substrate_diff`, `flow_diff`,
-  `tangent_flow_forward_jacobian`, `banach_state_diff`,
-  `forward_sweep_invert_diff` (exact closed-form inverse on
-  tangent-flow), `tangent_flow_posterior`, `lookup_table_posterior`.
-  Composition under `jax.grad` / `jax.jacobian` / `jax.hessian` works
-  directly on CanonicalState-typed callbacks.
-- `mpa_scale_solver.jax_pytree` — CanonicalState as a JAX PyTree
-  (leaves: `(chit, gamma_AB)`; aux: `k_frust`). Registered on
-  import; idempotent.
-- v0/v1 unwrapped sigs and `*_wrapped` variants unchanged. Fixture
-  byte-identity contract preserved.
-- JAX is now a hard dep (`jax>=0.4`, `jaxlib>=0.4`).
-
-**Foundation that landed at v2.1 (do not re-do):**
-
-- `Posterior` dataclass in `types.py` — mean (CanonicalState),
-  covariance (2x2 tuple), noise_variance, log_evidence, modes, notes.
-- `operations.forward_sweep_invert_posterior` /
-  `forward_sweep_invert_posterior_wrapped` — Bayesian inversion.
-  Tangent-flow: closed-form fast path. Lookup-table: weighted-moment
-  fit over top-k candidates. Separate function rather than
-  `posterior=True` kwarg on the existing wrapped variant — cleaner
-  return-type contract.
-
-### §v2.2-cancelled — N-mode generalization (cut c)
+## §v2.2-cancelled — N-mode generalization (cut c)
 
 Cancelled 2026-05-16 by user after framework cross-check. Kept as a
 tombstone (short, not refined further) so a future session does not
@@ -182,65 +135,6 @@ A foundational-questions entry in
 `H:/mpa-scale-solver/docs/foundational-questions.md` precedes any
 such re-opening per CLAUDE.md's no-eighth-operation rule.
 
-### §v2.3 — full I1–I4 intents + composition algebra (cut d)
-
-**Goal.** `intent_map` accepts any of `{I1 regime_preserving,
-I2 drive_faithful, I3 capacity_preserving, I4 persistence_preserving,
-I5 signature_preserving}`. Composition algebra between adjacent
-intents per RFC-S §3.
-
-**Capabilities to land.**
-
-- Four new intent implementations in `operations.intent_map`
-  (the dispatch arm already raises `NotImplementedError` for I1–I4;
-  fill in the implementations).
-- Each intent's invariance check fires in `validation.report_for_intent_map`.
-- Composition algebra: applying I_i then I_j composes per RFC-S §3.
-  Where they conflict (e.g. I1+I3 over-constrained), report a
-  sacrifice record naming the broken invariant.
-
-**Acceptance.**
-
-- v0 + v1 + v2.* fixtures pass unchanged.
-- New: `test_intents.py` — each intent's invariance check fires;
-  composition algebra holds (no conflicts on independent intents;
-  documented sacrifices on conflicting pairs).
-- README + CLAUDE.md updated; this §v2.3 deleted.
-- Tagged `v2.3.0`.
-
-### §v2.4 — non-Markovian Caputo flow (cut e)
-
-**Goal.** `flow(canonical, nu, field)` gains `beta_mem < 1` support
-via Prony sum-of-exponentials fit to the Mittag-Leffler kernel
-(mpa-solver's pattern, parallel-able). v1's Markovian path
-(`beta_mem = 1`) unchanged.
-
-**Capabilities to land.**
-
-- Extend `ScalingRule.refinement` to accept `beta_mem: float` and
-  `prony_terms: list[tuple[float, float]]` (amplitude, decay-rate
-  pairs).
-- New `jax_core.caputo_flow` primitive computing the Prony
-  sum-of-exponentials approximation. Differentiable in all
-  parameters.
-- `flow()` and `flow_diff()` dispatch on `refinement.get("beta_mem", 1.0)`:
-  1.0 → existing Markovian path; <1.0 → Caputo path.
-
-**Acceptance.**
-
-- v0 + v1 + v2.* fixtures pass unchanged.
-- New: `test_caputo_flow.py` — β_mem=1 byte-identical to v1's
-  Markovian; β_mem=0.5 matches Prony-reference within 1e-3 over a
-  representative ν grid.
-- README + CLAUDE.md updated; this §v2.4 deleted; §v3 refined to
-  reflect any cross-substrate implications.
-- Tagged `v2.4.0`.
-
-**Open / watch.** The Prony terms can either ship in the driver
-profile (curator-produced) or be fit on-the-fly from a measured
-memory kernel. For v2.4, accept pre-fit Prony terms only — fitting
-is mpa-conform's curator-path job (a separate follow-on session).
-
 ---
 
 ## §v3 — Cross-substrate operations + active learning + MCP server + learned translation-field form
@@ -258,16 +152,29 @@ alongside lookup_table and tangent_flow.
   `canonical_distance(state_a, state_b, metric)`,
   `universality_agreement(profile_a, profile_b)`. The framework's
   primary cross-substrate test (s→r migration per cdv1 §gFDR
-  signatures) becomes a direct call. These count against the
+  signatures) becomes a direct call. `universality_agreement`
+  consumes the v2.3 intent algebra (I5's universality-class metric
+  per RFC-S §5). Cross-substrate flow comparison composes the v2.4
+  Caputo path (substrates with differing β_mem must be compared at
+  matched ν, not matched-step-count). These count against the
   "seven-operation API stays stable" rule — they are *cross-substrate
-  compositions*, not new fundamental ops. Document as such.
+  compositions*, not new fundamental ops.
 - **Active learning** — `suggest_measurements(profile, n=5)` returns
   candidate operating points where the driver profile is weak
   (high-uncertainty regions in canonical space, gamut edges with low
   classification confidence). Curator operators consume these when
   planning library expansions. Builds on v2.1's `Posterior` (uses
   log-evidence + covariance trace as the per-point uncertainty
-  surface).
+  surface) and v2.3's intent invariance flags (suggest measurements
+  in cells where intent invariants are at risk).
+- **Per-intent round-trip metrics in `validate_driver_profile`** —
+  v2.3 relaxed the I5-only restriction and uses 5-bucket agreement
+  for every intent. v3 tightens this to the per-intent metrics
+  spelled out in RFC-S §5 (Hamming on regime partition for I1, L²
+  on drive vector for I2, ‖Γ*‖ deviation for I3, sequence distance
+  on {ε_n} for I4, universality-class agreement for I5). Lands as
+  part of the cross-substrate ops session since the metric table
+  there is the same table.
 - **MCP server** — the seven operations exposed as MCP tools.
   Stateless, JSON I/O. Read-only over driver profiles (no write
   surface). Tested against the MCP reference client.
@@ -418,7 +325,7 @@ browser-side execution becomes load-bearing.
 - Sensitivity backprop (via the native autodiff library — `enzyme`
   for Rust, `autodiff` / hand-written for C++; pick at session time).
 - Streaming + symbolic query + cross-substrate ops + Bayesian +
-  N-mode + Caputo + full intents.
+  Caputo + full intents (I1–I5) + composition.
 
 **Math source.** `mpa_scale_solver/jax_core.py` is the canonical
 math the port reads. Every primitive in jax_core has a 1:1 native

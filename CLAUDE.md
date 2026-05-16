@@ -29,7 +29,9 @@
     `jax.numpy`. Is the math source the v6 native port reads. v2.1
     extends with Laplace-approximation primitives
     (`laplace_covariance_from_jacobian` / `_from_hessian` /
-    `laplace_log_evidence`).
+    `laplace_log_evidence`). v2.4 adds `caputo_flow`
+    (Prony sum-of-exponentials approximation of the Mittag-Leffler
+    kernel; differentiable in all parameters).
   - `jax_ops.py` — consumer surface returning JAX arrays:
     `tangent_flow_substrate_diff`, `flow_diff`,
     `tangent_flow_forward_jacobian`, `banach_state_diff`,
@@ -46,6 +48,15 @@
   Separate functions, not a kwarg on the existing wrapped variant
   (cleaner return-type contract). The wrapped variant follows the
   established `*_wrapped` validation + provenance pattern.
+- **v2.3 intent algebra:** `intent_map` accepts all five RFC-S §3
+  intents (I1–I5); each handler is a thin free function in
+  `operations.py` returning `(mapped, sacrifice)`. New `intent_compose`
+  + `intent_compose_wrapped` apply intents sequentially; I2 (drive-
+  faithful) is rejected in any composition with other intents per §3.
+  Sacrifice dicts carry `preserved_invariant` + `invariant_preserved`
+  uniform keys plus intent-specific diagnostics; v1's I5 keys
+  (`regime_preserved`, `original_regime`, `mapped_regime`) are
+  preserved verbatim.
 
 Named family of operations, parallel to `mpa-solver`. Sibling, not nested.
 
@@ -82,10 +93,14 @@ alpha_s here, it's only a few lines." No. `fit_invariants` lives in
   routed through `jax_core.tangent_flow_canonical_inverse`. Bayesian
   inversion is v2.1; generic gradient-based (BFGS / L-BFGS / Newton)
   for non-tangent-flow differentiable forward maps is v5.
-- **`flow()` is continuous in Markovian scope only** (`beta_mem = 1`).
-  Non-Markovian Caputo (`beta_mem < 1`) is v2's fractional-RG
-  generalization. v1 supports tangent-flow fields directly; lookup-table
-  flow raises NotImplementedError.
+- **`flow()` supports Markovian (`beta_mem = 1`) and non-Markovian
+  Caputo (`beta_mem < 1`) scopes.** Markovian is the v1 closed-form
+  exponential / generic tangent-flow path. Caputo is the v2.4 Prony
+  sum-of-exponentials approximation of the Mittag-Leffler kernel; the
+  curator pre-fits `prony_terms` and ships them on
+  `ScalingRule.refinement`. Lookup-table flow still raises
+  NotImplementedError (lookup tables sample the flow without an
+  explicit generator).
 - **The Banach substrate's `state_at(nu)` is the framework analytical
   truth**: closed-form `chit_0 * exp(-lambda_chit * nu)` per Q1 of the
   v1 build session. v2 derives the lambdas from `flow_spectrum` via the
@@ -175,10 +190,16 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
   dataclass + `forward_sweep_invert_posterior` / `_wrapped`. Tangent-
   flow closed-form fast path; lookup-table weighted-moment fit.
   (Shipped 2026-05-16.)
-- **v2.2–v2.4**: remaining v2 slices per BLOCK_IN cuts (c)–(e):
-  N-mode generalization, I1–I4 intents, non-Markovian Caputo. Each
-  its own session; each builds on the v2.0 jax_core / jax_ops
-  foundation.
+- **v2.3**: All five RFC-S §3 intents (I1–I5) + composition algebra.
+  Five thin handlers in `operations.py`; `intent_compose` enforces the
+  I2-doesn't-compose rule. Uniform sacrifice-dict keys
+  (`preserved_invariant`, `invariant_preserved`) coexist with v1's I5
+  keys for back-compat. (Shipped 2026-05-16.) §v2.2 cut (c) N-mode
+  cancelled.
+- **v2.4**: non-Markovian Caputo flow via Prony sum-of-exponentials
+  approximation of the Mittag-Leffler kernel. `flow()` and `flow_diff()`
+  dispatch on `refinement['beta_mem']`; β = 1 stays on the v1 Markovian
+  path byte-identically. (Shipped 2026-05-16; v2 complete.)
 - **v3**: cross-substrate operations, active learning, MCP server
   interface, learned translation-field form (LearnedField uses
   jax_core / jax_ops directly).
@@ -201,6 +222,34 @@ Each is its own session, sequenced by the user via
 
 All twelve items met as of 2026-05-16. (Detail moved to README session
 log; the v1 acceptance contract is locked.)
+
+## Acceptance for the v2.4 build session
+
+Four items met as of 2026-05-16:
+
+1. v0 + v1 + v2.0–v2.3 fixtures + 10 new `test_caputo_flow.py` tests
+   pass (212 tests green total).
+2. β=1 with `prony_terms=[(1.0, 1.0)]` is byte-identical to v1's
+   Markovian Banach exponential (float-exact comparison across a
+   representative ν grid).
+3. New `jax_core.caputo_flow` primitive (differentiable, JIT-compiles);
+   `flow()` / `flow_diff()` dispatch on `refinement['beta_mem']` (β < 1
+   → Caputo; β = 1 → v1 unchanged); missing `prony_terms` with β < 1
+   raises.
+4. README + CLAUDE.md updated; BLOCK_IN §v2.4 deleted; v2 trajectory
+   complete (block-in carries v3 → v6 only).
+
+## Acceptance for the v2.3 build session
+
+Three items met as of 2026-05-16:
+
+1. v0 + v1 + v2.0/v2.1 fixtures + 28 new `test_intents.py` tests pass
+   (202 tests green total). The deprecated `TestIntentMap::test_i1_to_i4_not_implemented`
+   placeholder was removed; positive coverage replaces it in
+   `test_intents.py`.
+2. All five intents implemented as thin free functions in `operations.py`;
+   `intent_compose` enforces the I2 composition rule.
+3. README + CLAUDE.md updated; BLOCK_IN §v2.3 deleted.
 
 ## Acceptance for the v2.0 build session
 

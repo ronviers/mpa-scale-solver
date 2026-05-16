@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mpa-scale-solver"
-version = "2.1.0"
+version = "2.4.0"
 description = "MPA scale-management kernel: tau_obs projection, canonical-frame operations, continuous flow, Banach calibration, JAX-differentiable surface."
 readme = "README.md"
 requires-python = ">=3.10"

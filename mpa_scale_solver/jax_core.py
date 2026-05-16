@@ -286,6 +286,55 @@ def laplace_covariance_from_hessian(
     return noise_variance * jnp.linalg.inv(hessian)
 
 
+# ---------------------------------------------------------------------------
+# Non-Markovian Caputo flow via Prony sum-of-exponentials (v2.4 — cut e)
+# ---------------------------------------------------------------------------
+
+def caputo_flow(
+    chit_0: jnp.ndarray,
+    gamma_AB_0: jnp.ndarray,
+    lambda_chit: jnp.ndarray,
+    lambda_gamma: jnp.ndarray,
+    nu: jnp.ndarray,
+    prony_amplitudes: jnp.ndarray,
+    prony_decays: jnp.ndarray,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Non-Markovian Caputo flow via a Prony sum-of-exponentials kernel.
+
+    The Mittag-Leffler kernel `E_β(-λν)` for `β < 1` is the canonical
+    non-Markovian flow generator (v9_receipts §RG closure substrate-
+    scope note). The curator pre-fits a Prony sum
+
+        E_β(-x) ≈ Σ_k a_k exp(-b_k x)
+
+    and ships `(a_k, b_k)` on the `ScalingRule.refinement` dict as
+    `prony_terms`. This primitive computes per-axis
+
+        chit(ν)     = chit_0     * Σ_k a_k exp(-b_k λ_chit  ν)
+        gamma_AB(ν) = gamma_AB_0 * Σ_k a_k exp(-b_k λ_gamma ν)
+
+    For `β = 1` with `prony_terms = [(1.0, 1.0)]`, the kernel reduces to
+    `exp(-λν)` and the result is byte-identical to the v1 Markovian
+    Banach exponential branch in `flow._flow_tangent`.
+
+    Differentiable in all parameters (chit_0, gamma_AB_0, lambdas, ν,
+    prony amplitudes and decays). Composes under `jax.grad` /
+    `jax.jacobian`; v5's sensitivity backprop will compose against the
+    same surface.
+
+    `prony_amplitudes` and `prony_decays` are 1-D arrays of equal length;
+    a length-mismatch is the caller's bug (no defensive check — the
+    jax broadcast would fail with a shape error in any case).
+    """
+    chit_kernel = jnp.sum(prony_amplitudes * jnp.exp(-prony_decays * lambda_chit * nu))
+    gamma_kernel = jnp.sum(prony_amplitudes * jnp.exp(-prony_decays * lambda_gamma * nu))
+    return chit_0 * chit_kernel, gamma_AB_0 * gamma_kernel
+
+
+# ---------------------------------------------------------------------------
+# Laplace log evidence
+# ---------------------------------------------------------------------------
+
 def laplace_log_evidence(
     residual_at_map: jnp.ndarray,
     hessian: jnp.ndarray,
