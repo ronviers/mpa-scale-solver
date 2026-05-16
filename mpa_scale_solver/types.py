@@ -12,12 +12,24 @@ Two pairs of canonical types live here, distinguished by where they ride:
 - `CanonicalState` / `SubstrateState` are the runtime working states. The
   state pair carries no tau_obs (tau_obs is a free argument on every
   operation, never embedded), matching the §A.3 commitment.
+
+v1 additions (handoff §B.4, §C.4, §C.5, §C.6):
+
+- `TangentFlowField` + `ScalingRule` add the second translation-field shape
+  (RFC-S Appendix B item 1). `TranslationField` remains the lookup-table
+  dataclass for back-compat; `LookupTableField` is an alias for the
+  handoff-spelled name; `AnyTranslationField` is the union type the v1
+  operations accept.
+- `OperationOutput[T]` / `ValidationReport` / `Provenance` / `DispatchPath`
+  ride with the wrapped-variant operations (`*_wrapped`).
+- `InverseLookupSidecar` is the curator-precomputed dispatch fast-path.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from enum import Enum
+from typing import Any, Generic, Literal, Optional, TypeVar, Union
 
 
 # ---------------------------------------------------------------------------
@@ -99,18 +111,68 @@ class TranslationRule:
 
 @dataclass(frozen=True)
 class TranslationField:
-    """Forward-only canonical -> substrate-native map (RFC-S §4, §Q13).
+    """Lookup-table translation field (RFC-S §4, §Q13).
 
-    `direction` and `shape` are Literal type pins, not enums with branches.
-    Forward-only is §Q13 (the backward map is structurally ill-posed).
-    lookup_table is RFC-S Appendix B item 1 deferral (tangent-flow form is
-    v3, not v2).
+    `direction` and `shape` are Literal type pins. Forward-only is §Q13
+    (the backward map is structurally ill-posed). The lookup-table form is
+    the v0 production shape; v1 adds the tangent-flow form as a sibling.
+
+    The v0 name `TranslationField` is preserved verbatim for back-compat.
+    The handoff-spelled name `LookupTableField` is exposed below as an
+    alias. The Union accepted by v1 operations is `AnyTranslationField`.
     """
 
     direction: Literal["forward"]
     shape: Literal["lookup_table"]
     rule: list[TranslationRule]
     description: Optional[str] = None
+
+
+# v1: handoff-spelled name. Same class, two names — keeps v0 constructors
+# working (`TranslationField(direction="forward", shape="lookup_table", ...)`)
+# while introducing the disambiguated form for new code.
+LookupTableField = TranslationField
+
+
+@dataclass(frozen=True)
+class ScalingRule:
+    """Banach-canonical leading-order tangent-flow rule (handoff §B.4).
+
+        gamma(tau_obs) = gamma_initial * (tau_obs / tau_obs_ref) ** delta_gamma
+        chit(tau_obs)  = chit_initial + delta_chit * ln(tau_obs / tau_obs_ref)
+
+    Default delta_gamma = delta_chit = 0.0 is identity scaling (the Banach
+    substrate's translation-field defaults). Substrate-conditional
+    refinements ride in `refinement`.
+    """
+
+    tau_obs_ref: float
+    delta_gamma: float = 0.0
+    delta_chit: float = 0.0
+    refinement: Optional[dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class TangentFlowField:
+    """Tangent-flow translation field (handoff §B.4 / §C.2).
+
+    Closed-form sibling of `TranslationField` (lookup_table). The scaling
+    rule carries the leading-order auto-remap derivatives at the reference
+    point; `rule_at_origin` pins the substrate-side mapping at the
+    reference point so the substrate identity is well-defined.
+    """
+
+    direction: Literal["forward"]
+    shape: Literal["tangent_flow"]
+    rule_at_origin: TranslationRule
+    scaling: ScalingRule
+    description: Optional[str] = None
+
+
+# v1: the union the operations accept. Per the handoff §A.4 the
+# seven-operation API surface still takes "a translation field" — both
+# shapes ride the same callsites, dispatched on `field.shape`.
+AnyTranslationField = Union[TranslationField, TangentFlowField]
 
 
 # ---------------------------------------------------------------------------
@@ -148,3 +210,103 @@ class RegimeReading:
 
     regime: RegimeLabel
     k_frust: bool = False
+
+
+# ---------------------------------------------------------------------------
+# v1: provenance + dispatch-path
+# ---------------------------------------------------------------------------
+
+class DispatchPath(str, Enum):
+    """Which path the operation took (handoff §C.6).
+
+    Recorded on every `Provenance` so consumers (mpa-conform's audit
+    record, mpa-auditor's display layer) can distinguish table-hits from
+    compute-fallbacks without re-running the operation.
+    """
+
+    TABLE_HIT = "table_hit"          # sidecar lookup succeeded
+    COMPUTE_FALLBACK = "compute_fallback"   # sidecar missed; brute force ran
+    DIRECT_COMPUTE = "direct_compute"       # no sidecar consulted
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """Per-call provenance trail (handoff §C.6).
+
+    Populated by each `*_wrapped` operation and consumed by mpa-conform
+    when assembling the bundle's audit record. Fields are intentionally
+    primitive types so the record serializes cleanly into the bundle.
+    """
+
+    solver_version: str
+    operation: str
+    timestamp_ns: int
+    dispatch_path: DispatchPath
+    table_version: Optional[str] = None
+    notes: tuple[str, ...] = ()
+
+
+# ---------------------------------------------------------------------------
+# v1: per-call validation
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ValidationReport:
+    """Per-call validation flags (handoff §C.5).
+
+    Flags are reported, not raised. Consumers decide whether to trust
+    borderline outputs. The default-True convention means an operation
+    that has no constraint on a given flag still reports True (the
+    constraint is vacuously satisfied), distinct from a flag that fired.
+    """
+
+    asymptotic_closure_compliant: bool = True
+    k_frust_invariant: bool = True
+    round_trip_residual: Optional[float] = None
+    notes: tuple[str, ...] = ()
+
+
+T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class OperationOutput(Generic[T]):
+    """Wrapped operation result (handoff §A.2 / §C.5 / §C.6).
+
+    Returned by every `*_wrapped` operation. The unwrapped v0 functions
+    keep their raw return types for back-compat; v1 consumers that want
+    validation + provenance call the wrapped variants.
+    """
+
+    value: T
+    validation: ValidationReport
+    provenance: Provenance
+
+
+# ---------------------------------------------------------------------------
+# v1: inverse-lookup-table sidecar
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class InverseLookupSidecar:
+    """Curator-precomputed inverse-lookup table (handoff §C.4).
+
+    Sidecar production lives in mpa-conform's curator path. This solver
+    consumes the sidecar via `forward_sweep_invert`'s optional `sidecar`
+    kwarg: when present, table-first; on miss, compute-fallback.
+
+    `forward_lookup` and `inverse_lookup` are keyed on rounded
+    (chit, gamma_AB, tau_obs) tuples — see `sidecar.py` for the rounding
+    contract. `ambiguity_regions` records multi-valued inverse zones so
+    consumers can opt to fall through to the compute path even on a hit.
+    """
+
+    version: str
+    driver_profile_id: str
+    driver_profile_version: str
+    tau_obs_grid: tuple[float, ...]
+    substrate_grid: tuple[SubstrateState, ...]
+    canonical_grid: tuple[CanonicalState, ...]
+    forward_lookup: dict[tuple[float, float, float], SubstrateState]
+    inverse_lookup: dict[tuple[float, float, float], CanonicalState]
+    ambiguity_regions: tuple[dict[str, Any], ...] = ()

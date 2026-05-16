@@ -13,6 +13,8 @@ contributes and what comes from upstream / downstream.
 | gamma_AB | float32 | **mpa-scale-solver** | per-frame |
 | regime_label | float32 (encoded enum) | **mpa-scale-solver** (`regime_at`, 5-bucket) | per-frame |
 | in_gamut | float32 (0 or 1) | **mpa-scale-solver** (`gamut_classify`) | per-frame |
+| provenance_hash | float32 | **mpa-scale-solver** (`provenance_hash` on wrapped-op output; v1) | per-frame |
+| validation_flags | float32 (bitfield) | **mpa-scale-solver** (`validation_flags_bitfield`; v1) | per-frame |
 | X_c | float32 | mpa-solver (`fit_invariants`) | per-frame |
 | X_r | float32 | mpa-solver | per-frame |
 | alpha_s | float32 | mpa-solver | per-frame |
@@ -34,15 +36,18 @@ of frames in the sweep.
 
 ## What this repo emits
 
-The four scale-solver channels — **chit**, **gamma_AB**, **regime_label**,
-**in_gamut** — come out of three operations:
+The six scale-solver channels — **chit**, **gamma_AB**, **regime_label**,
+**in_gamut**, **provenance_hash**, **validation_flags** — come out of
+five operations / helpers:
 
-| Channel | Operation | Field |
+| Channel | Operation / helper | Field |
 |---|---|---|
 | chit | `forward_sweep_invert` | `recovered.chit` |
 | gamma_AB | `forward_sweep_invert` | `recovered.gamma_AB` |
 | regime_label | `regime_at` | `RegimeReading.regime` (enum, encoded as 0..4) |
 | in_gamut | `gamut_classify` | `{"in_gamut": bool}` → 1.0 / 0.0 |
+| provenance_hash | `provenance_hash(prov)` on `*_wrapped` output | float in [0, 1) — fingerprints (version, op, dispatch_path, table_version) |
+| validation_flags | `validation_flags_bitfield(report)` | bit 0 = asymptotic_closure_compliant; bit 1 = k_frust_invariant; bit 2 = round_trip_residual present |
 
 `regime_at` returns the **five-bucket** label. The encoding convention
 for the EXR float32 channel:
@@ -78,4 +83,12 @@ Renderers that prefer the three-bucket display banding call
   manifest (or call `regime_display_band` on the deserialized label).
 - **in_gamut**: 1.0 / 0.0. Frames where the canonical state is outside
   the substrate's declared gamut carry 0.0 here; consumers should consult
-  `intent_map` output in adjacent channels (v1) before interpreting.
+  `intent_map` output in adjacent channels before interpreting.
+- **provenance_hash**: float in `[0, 1)`. Stable across runs; differs by
+  operation + dispatch_path + table_version. Consumers compare two
+  frames' hashes to detect dispatch-path drift without unpacking the
+  full provenance payload.
+- **validation_flags**: small integer cast to float32 (0..7). Bit 0:
+  asymptotic_closure_compliant; bit 1: k_frust_invariant; bit 2:
+  round_trip_residual present (operation actually computed a round
+  trip).

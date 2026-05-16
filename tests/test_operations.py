@@ -13,7 +13,9 @@ from mpa_scale_solver import (
     GamutSpec,
     OperatingPoint,
     RegimeReading,
+    ScalingRule,
     SubstrateState,
+    TangentFlowField,
     TranslationField,
     TranslationRule,
     apply_translation,
@@ -160,6 +162,62 @@ class TestApplyTranslation:
         s_via_field = apply_translation(c, field, tau_obs=1.0)
         s_via_index = apply_translation(c, index, tau_obs=1.0)
         assert s_via_field.label == s_via_index.label
+
+
+# ---------------------------------------------------------------------------
+# apply_translation on tangent-flow fields (v1 dispatch on shape)
+# ---------------------------------------------------------------------------
+
+def _tangent_flow_field(*, delta_chit=0.0, delta_gamma=0.0, refinement=None) -> TangentFlowField:
+    origin = TranslationRule(
+        operating_point=OperatingPoint(label="origin", gt="s", axes={"tau_obs": 1.0}),
+        xdot_choice="identity",
+        canonical=CanonicalPoint(chit=0.0, gamma_AB=0.0, k_frust=False, method="test"),
+    )
+    return TangentFlowField(
+        direction="forward", shape="tangent_flow",
+        rule_at_origin=origin,
+        scaling=ScalingRule(
+            tau_obs_ref=1.0,
+            delta_chit=delta_chit,
+            delta_gamma=delta_gamma,
+            refinement=refinement,
+        ),
+    )
+
+
+class TestApplyTranslationTangentFlow:
+    def test_identity_scaling_returns_canonical_values(self):
+        """delta = 0 in both axes = identity translation."""
+        field = _tangent_flow_field()
+        c = CanonicalState(chit=0.7, gamma_AB=-0.3)
+        s = apply_translation(c, field, tau_obs=5.0)
+        assert s.observables["substrate_chit"] == pytest.approx(0.7)
+        assert s.observables["substrate_gamma_AB"] == pytest.approx(-0.3)
+        assert s.label == "origin"
+
+    def test_log_chit_drift_applied(self):
+        """delta_chit log-drift adds delta_chit * log(tau_obs/tau_ref)."""
+        field = _tangent_flow_field(delta_chit=0.5)
+        c = CanonicalState(chit=1.0, gamma_AB=-0.2)
+        s = apply_translation(c, field, tau_obs=math.e)  # log(e/1) = 1
+        # substrate_chit = 1.0 + 0.5*1 = 1.5
+        assert s.observables["substrate_chit"] == pytest.approx(1.5)
+
+    def test_power_gamma_scaling_applied(self):
+        """delta_gamma power-scales gamma by (tau/tau_ref)^delta_gamma."""
+        field = _tangent_flow_field(delta_gamma=-1.0)
+        c = CanonicalState(chit=0.5, gamma_AB=-0.4)
+        s = apply_translation(c, field, tau_obs=2.0)
+        # substrate_gamma_AB = -0.4 * (2/1)^-1 = -0.2
+        assert s.observables["substrate_gamma_AB"] == pytest.approx(-0.2)
+
+    def test_zero_tau_obs_returns_canonical_unmodified(self):
+        """At tau_obs <= 0 we cannot evaluate log/ratio; treat as identity."""
+        field = _tangent_flow_field(delta_chit=0.5)
+        c = CanonicalState(chit=1.0, gamma_AB=-0.2)
+        s = apply_translation(c, field, tau_obs=0.0)
+        assert s.observables["substrate_chit"] == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------

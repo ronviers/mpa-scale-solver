@@ -5,21 +5,31 @@ operations. Sibling to `mpa-solver` (forward physics + observable
 extraction). Consumed by `mpa-conform` (orchestration → signed
 `declaration_bundle.json`). Read by `mpa-auditor` (display).
 
-The Python implementation is the v0 shipping artifact. A native
-(Rust / C++ + WASM + Python bindings) port comes later, byte-identical
-to this Python.
+The Python implementation is the production artifact through v5. A
+native (Rust / C++ + WASM + Python bindings) port lands at v6, matching
+the Python under the per-seed reproducibility discipline.
 
-## The seven operations
+## The seven operations (surface stable across v0–v6)
 
 | Operation | Role |
 |---|---|
-| `apply_translation` | canonical state → substrate-native at τ_obs (forward) |
-| `forward_sweep_invert` | substrate observation → canonical state at τ_obs |
+| `apply_translation` | canonical state → substrate-native at τ_obs (dispatches on `lookup_table` / `tangent_flow`) |
+| `forward_sweep_invert` | substrate observation → canonical state at τ_obs (brute-force grid; sidecar fast-path via wrapped variant) |
 | `tau_obs_sweep` | per-frame fan-out across a τ_obs grid |
 | `regime_at` | five-bucket vertex regime classifier |
 | `gamut_classify` | in-gamut / out-of-gamut diagnosis |
-| `intent_map` | I5 signature-preserving remap (I1–I4: `NotImplementedError`) |
+| `intent_map` | I5 signature-preserving remap (I1–I4: v2) |
 | `validate_driver_profile` | RFC-S §5 round-trip residuals |
+
+Plus the v1 addition `flow(canonical_initial, nu, field)` — continuous-form
+`C^nu = exp(nu * ln C)` in Markovian scope. See
+[`docs/CONTINUOUS_FLOW.md`](docs/CONTINUOUS_FLOW.md).
+
+Each of the seven has a `*_wrapped` variant returning
+`OperationOutput[T]` with a `ValidationReport` and `Provenance`
+alongside the value (handoff §A.2 / §C.5 / §C.6). v0 sigs are unchanged;
+v1 consumers that want validation + provenance call the wrapped
+variants.
 
 ## Install
 
@@ -57,19 +67,27 @@ grid = np.array([[c, g] for c in np.linspace(-1, 1, 11) for g in [-0.5, 0.0, 0.5
 recovered, residual = forward_sweep_invert(substrate, field, 1.0, grid)
 ```
 
-## The camera migration test
+## The camera tests
 
-`tests/test_camera_migration.py` is the visual end-to-end test. It builds a
-synthetic substrate whose tau_obs-camera sweep traces the framework's
-c → s → r migration, then verifies forward_sweep_invert recovers analytical
-canonical truth across 80 log-spaced frames.
+Two camera tests now live alongside each other:
+
+- **`tests/test_banach_camera.py`** — the v1 acceptance test. The Banach
+  substrate's `state_at(nu)` is the framework analytical truth (closed-form
+  exponential decay per Q1 of the v1 build session); `forward_sweep_invert`
+  recovers canonical state per frame and we score against the truth.
+  Pass criterion: `max |residual| <= 0.001` per axis. See
+  [`docs/BANACH_SUBSTRATE.md`](docs/BANACH_SUBSTRATE.md).
+- **`tests/test_camera_migration.py`** — the v0 legacy test, kept passing
+  as back-compat coverage of the lookup-table dispatch path. Synthetic
+  aging_log fixture, tolerance ≤ 0.05.
 
 ```
+pytest tests/test_banach_camera.py
 pytest tests/test_camera_migration.py
 ```
 
-Outputs `tests/out/migration_compare.png` (numerical curve overlaid on
-analytical) and `tests/out/result.json`. Pass criterion: max |residual| ≤ 0.05.
+The v0 test outputs `tests/out/migration_compare.png` (numerical curve
+overlaid on analytical) and `tests/out/result.json`.
 
 ## How this composes
 
@@ -104,4 +122,5 @@ per-frame EXR channels mpa-conform assembles using outputs from this repo.
 
 | Date | Session | Outcome |
 |---|---|---|
-| 2026-05-15 | Python v0.1.0 build (this session) | Seven operations shipped; gfdr_model.js ported (5-bucket); camera test passes max\|residual\| = 0.012 vs tolerance 0.05; all three seed-corpus profiles pass round-trip closure. |
+| 2026-05-15 | Python v0.1.0 build | Seven operations shipped; gfdr_model.js ported (5-bucket); camera test passes max\|residual\| = 0.012 vs tolerance 0.05; all three seed-corpus profiles pass round-trip closure. |
+| 2026-05-16 | Python v1.0.0 build | Tangent-flow translation field + continuous `flow()` + Banach calibration substrate + inverse-lookup-table sidecar dispatch + per-call self-validation + full provenance trail. Seven wrapped variants (`*_wrapped`) returning `OperationOutput[T]`. Banach camera test passes max\|residual\| < 0.001. All v0 fixtures pass unchanged. |

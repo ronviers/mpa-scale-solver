@@ -3,13 +3,19 @@
 All stateless free functions on plain dataclasses. Per §A.3, the operations
 take tau_obs as an explicit argument rather than reading it off the state.
 
-Per §C.2 the production translation-field shape is `lookup_table`. The
-parametric path from the prior reference (aging_log, trivial_baseline) lives
-in `_test_fixtures.py` and is used only by the camera test.
+v0 production translation-field shape is `lookup_table`. v1 adds the
+`tangent_flow` shape via `TangentFlowField`; `apply_translation` dispatches
+on `field.shape`. The parametric path from the prior reference (aging_log,
+trivial_baseline) lives in `_test_fixtures.py` and is used only by the
+camera test.
 
 Per §C.4 the canonical regime classifier is the FIVE-bucket cut from
 gfdr_model.vertex_regime. The three-bucket cut (`regime_display_band`) is a
 display-only helper.
+
+v1 adds seven `*_wrapped` variants returning `OperationOutput[T]` with
+validation + provenance riding alongside the value. v0 signatures are
+unchanged (handoff §A.2 back-compat).
 """
 
 from __future__ import annotations
@@ -19,16 +25,24 @@ from typing import Any, Callable, Optional, Union
 
 import numpy as np
 
+from . import validation as _validation
 from .gfdr_model import vertex_regime
+from .provenance import make_provenance
+from .sidecar import lookup_forward, lookup_inverse
 from .types import (
+    AnyTranslationField,
     CanonicalPoint,
     CanonicalState,
     DisplayBand,
+    DispatchPath,
     GamutSpec,
+    InverseLookupSidecar,
     OperatingPoint,
+    OperationOutput,
     RegimeLabel,
     RegimeReading,
     SubstrateState,
+    TangentFlowField,
     TranslationField,
     TranslationRule,
 )
@@ -110,7 +124,7 @@ class TranslationFieldIndex:
 
 def apply_translation(
     canonical: CanonicalState,
-    field: Union[TranslationField, TranslationFieldIndex],
+    field: Union[TranslationField, TangentFlowField, "TranslationFieldIndex"],
     tau_obs: float,
     *,
     domain_distance_threshold: float = DEFAULT_DOMAIN_DISTANCE_THRESHOLD,
@@ -121,16 +135,36 @@ def apply_translation(
     Per §Q13 the only well-defined direction is forward; the backward map
     (substrate -> canonical) is handled by forward_sweep_invert.
 
-    Per §C.2 the production shape is `lookup_table`. Given (canonical,
-    tau_obs), find the rule whose (canonical.chit, canonical.gamma_AB) and
-    operating-point tau_obs (if any) are L2-nearest. Return a SubstrateState
-    carrying the matched rule's operating-point identity (label + axes).
+    Dispatch on `field.shape`:
+      - `lookup_table` (v0): find the rule whose
+        (canonical.chit, canonical.gamma_AB) and operating-point tau_obs
+        (if any) are L2-nearest; return a SubstrateState carrying the
+        matched rule's operating-point identity.
+      - `tangent_flow` (v1): apply the ScalingRule closed form and project
+        through `rule_at_origin`.
 
-    Raises ValueError if the nearest rule is beyond
-    domain_distance_threshold — that is the curator-path's signal that the
+    Raises ValueError for lookup_table when the nearest rule is beyond
+    `domain_distance_threshold` — the curator-path's signal that the
     declared driver profile does not cover this substrate state (a gamut
     violation handled upstream).
     """
+    if isinstance(field, TangentFlowField):
+        return _apply_tangent_flow(canonical, field, tau_obs)
+    return _apply_lookup(
+        canonical, field, tau_obs,
+        domain_distance_threshold=domain_distance_threshold,
+        tau_obs_weight=tau_obs_weight,
+    )
+
+
+def _apply_lookup(
+    canonical: CanonicalState,
+    field: Union[TranslationField, "TranslationFieldIndex"],
+    tau_obs: float,
+    *,
+    domain_distance_threshold: float,
+    tau_obs_weight: float,
+) -> SubstrateState:
     index = field if isinstance(field, TranslationFieldIndex) else TranslationFieldIndex(field)
     if len(index._rules) == 0:
         raise ValueError("translation field has no rules")
@@ -151,6 +185,40 @@ def apply_translation(
         observables={
             "canonical_chit": rule.canonical.chit,
             "canonical_gamma_AB": rule.canonical.gamma_AB,
+        },
+    )
+
+
+def _apply_tangent_flow(
+    canonical: CanonicalState,
+    field: TangentFlowField,
+    tau_obs: float,
+) -> SubstrateState:
+    """Tangent-flow forward map (handoff §C.2).
+
+    Scales the canonical state via the ScalingRule closed form, then
+    packages it as a substrate observation labeled by `rule_at_origin`.
+    For the Banach default (delta_chit = delta_gamma = 0) this is the
+    identity translation: substrate observables equal canonical values.
+    """
+    rule = field.scaling
+    if tau_obs <= 0.0 or rule.tau_obs_ref <= 0.0:
+        scaled_chit = canonical.chit
+        scaled_gamma = canonical.gamma_AB
+    else:
+        ratio = tau_obs / rule.tau_obs_ref
+        scaled_chit = canonical.chit + rule.delta_chit * math.log(ratio)
+        scaled_gamma = canonical.gamma_AB * (ratio ** rule.delta_gamma)
+    origin = field.rule_at_origin
+    axes = dict(origin.operating_point.axes)
+    axes["tau_obs"] = tau_obs
+    return SubstrateState(
+        tau_obs=tau_obs,
+        label=origin.operating_point.label,
+        axes=axes,
+        observables={
+            "substrate_chit": scaled_chit,
+            "substrate_gamma_AB": scaled_gamma,
         },
     )
 
@@ -226,9 +294,15 @@ def forward_sweep_invert(
         )
     score_fn = score_fn or _default_substrate_score
     if forward_map is None:
-        index = TranslationFieldIndex(field)
-        def forward_map(c: CanonicalState, t: float) -> SubstrateState:  # type: ignore[misc]
-            return apply_translation(c, index, t)
+        if isinstance(field, TangentFlowField):
+            # Tangent-flow apply_translation is closed-form; no index.
+            _field = field
+            def forward_map(c: CanonicalState, t: float) -> SubstrateState:  # type: ignore[misc]
+                return apply_translation(c, _field, t)
+        else:
+            index = TranslationFieldIndex(field)
+            def forward_map(c: CanonicalState, t: float) -> SubstrateState:  # type: ignore[misc]
+                return apply_translation(c, index, t)
 
     n = canonical_grid.shape[0]
     residuals = np.empty(n, dtype=np.float64)
@@ -285,15 +359,22 @@ def tau_obs_sweep(
                 f"tau_obs_grid length {len(tau_obs_grid)}"
             )
 
-    # Build the field index once; reuse across frames.
-    index = TranslationFieldIndex(field) if forward_map is None else None
+    # Build the field index once for lookup_table; reuse across frames.
+    # Tangent-flow has no index — apply_translation dispatches directly.
+    if forward_map is None and not isinstance(field, TangentFlowField):
+        index: Optional[TranslationFieldIndex] = TranslationFieldIndex(field)
+    else:
+        index = None
 
     trajectory: list[CanonicalState] = []
     for i, tau in enumerate(tau_obs_grid):
         if forward_map is None:
-            assert index is not None
-            def fm(c: CanonicalState, t: float, _idx=index) -> SubstrateState:
-                return apply_translation(c, _idx, t)
+            if index is not None:
+                def fm(c: CanonicalState, t: float, _idx=index) -> SubstrateState:
+                    return apply_translation(c, _idx, t)
+            else:
+                def fm(c: CanonicalState, t: float, _field=field) -> SubstrateState:
+                    return apply_translation(c, _field, t)
             state, _ = forward_sweep_invert(
                 targets[i], field, float(tau), canonical_search_grid,
                 score_fn=score_fn, forward_map=fm,
@@ -550,3 +631,242 @@ def parse_gamut(d: dict[str, Any]) -> GamutSpec:
             d.get("out_of_scope_residual_threshold", 0.05)
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# v1: wrapped variants (handoff §A.2, §C.5, §C.6)
+# ---------------------------------------------------------------------------
+#
+# Each `*_wrapped` calls the matching v0 operation, then stamps a
+# ValidationReport + Provenance onto an OperationOutput[T]. Sidecar
+# dispatch (handoff §C.4) is opt-in via the `sidecar` kwarg and is
+# meaningful for `apply_translation_wrapped`, `forward_sweep_invert_wrapped`,
+# and `tau_obs_sweep_wrapped`. The remaining four operations have no
+# sidecar dispatch — their wrapped variants only attach validation +
+# provenance.
+
+
+def apply_translation_wrapped(
+    canonical: CanonicalState,
+    field: AnyTranslationField,
+    tau_obs: float,
+    *,
+    domain_distance_threshold: float = DEFAULT_DOMAIN_DISTANCE_THRESHOLD,
+    tau_obs_weight: float = 1.0,
+    sidecar: Optional[InverseLookupSidecar] = None,
+) -> OperationOutput[SubstrateState]:
+    """Wrapped variant of `apply_translation` (handoff §A.2 / §C.5)."""
+    dispatch = DispatchPath.DIRECT_COMPUTE
+    table_version: Optional[str] = None
+    if sidecar is not None:
+        hit = lookup_forward(sidecar, canonical, tau_obs)
+        if hit is not None:
+            substrate = hit
+            dispatch = DispatchPath.TABLE_HIT
+        else:
+            substrate = apply_translation(
+                canonical, field, tau_obs,
+                domain_distance_threshold=domain_distance_threshold,
+                tau_obs_weight=tau_obs_weight,
+            )
+            dispatch = DispatchPath.COMPUTE_FALLBACK
+        table_version = sidecar.version
+    else:
+        substrate = apply_translation(
+            canonical, field, tau_obs,
+            domain_distance_threshold=domain_distance_threshold,
+            tau_obs_weight=tau_obs_weight,
+        )
+    report = _validation.report_for_apply_translation(canonical, substrate)
+    prov = make_provenance(
+        "apply_translation",
+        dispatch_path=dispatch,
+        table_version=table_version,
+    )
+    return OperationOutput(value=substrate, validation=report, provenance=prov)
+
+
+def forward_sweep_invert_wrapped(
+    target_substrate: SubstrateState,
+    field: AnyTranslationField,
+    tau_obs: float,
+    canonical_grid: np.ndarray,
+    *,
+    score_fn: Optional[Callable[[SubstrateState, SubstrateState], float]] = None,
+    forward_map: Optional[Callable[[CanonicalState, float], SubstrateState]] = None,
+    return_residual_field: bool = False,
+    sidecar: Optional[InverseLookupSidecar] = None,
+    compute_round_trip: bool = True,
+) -> OperationOutput[CanonicalState]:
+    """Wrapped variant of `forward_sweep_invert`.
+
+    Sidecar dispatch is table-first: an inverse-table hit returns the
+    recorded canonical with `dispatch_path = TABLE_HIT`; on miss the
+    brute-force grid search runs with `dispatch_path = COMPUTE_FALLBACK`.
+
+    `compute_round_trip` controls whether the wrapped variant runs a
+    forward-then-back recovery for the validation report's
+    `round_trip_residual`. Default True; turn off in tight inner loops.
+    """
+    dispatch = DispatchPath.DIRECT_COMPUTE
+    table_version: Optional[str] = None
+    residual_field: Optional[np.ndarray] = None
+    if sidecar is not None:
+        table_version = sidecar.version
+        hit = lookup_inverse(sidecar, target_substrate, tau_obs)
+        if hit is not None:
+            recovered = hit
+            dispatch = DispatchPath.TABLE_HIT
+        else:
+            result = forward_sweep_invert(
+                target_substrate, field, tau_obs, canonical_grid,
+                score_fn=score_fn, forward_map=forward_map,
+                return_residual_field=return_residual_field,
+            )
+            recovered = result[0]
+            if return_residual_field:
+                residual_field = result[2]
+            dispatch = DispatchPath.COMPUTE_FALLBACK
+    else:
+        result = forward_sweep_invert(
+            target_substrate, field, tau_obs, canonical_grid,
+            score_fn=score_fn, forward_map=forward_map,
+            return_residual_field=return_residual_field,
+        )
+        recovered = result[0]
+        if return_residual_field:
+            residual_field = result[2]
+
+    rt_residual: Optional[float] = None
+    if compute_round_trip:
+        # Forward-then-back via the same translation field. Skipped for
+        # tangent-flow fields when delta=0 (rt would be trivially 0 by
+        # construction) but the call is harmless.
+        try:
+            forward_back = apply_translation(recovered, field, tau_obs)
+            rt_residual = math.sqrt(_default_substrate_score(forward_back, target_substrate))
+        except ValueError:
+            rt_residual = float("inf")
+
+    report = _validation.report_for_forward_sweep_invert(
+        target_substrate, recovered, round_trip_residual=rt_residual,
+    )
+    if residual_field is not None:
+        report = report  # residual_field is a v0 return-shape concern, not part of validation
+    prov = make_provenance(
+        "forward_sweep_invert",
+        dispatch_path=dispatch,
+        table_version=table_version,
+    )
+    return OperationOutput(value=recovered, validation=report, provenance=prov)
+
+
+def tau_obs_sweep_wrapped(
+    target_substrates: Union[SubstrateState, list[SubstrateState]],
+    field: AnyTranslationField,
+    tau_obs_grid: np.ndarray,
+    canonical_search_grid: np.ndarray,
+    *,
+    score_fn: Optional[Callable[[SubstrateState, SubstrateState], float]] = None,
+    forward_map: Optional[Callable[[CanonicalState, float], SubstrateState]] = None,
+    sidecar: Optional[InverseLookupSidecar] = None,
+) -> OperationOutput[list[CanonicalState]]:
+    """Wrapped variant of `tau_obs_sweep`.
+
+    Per-frame dispatch via `forward_sweep_invert_wrapped`. The aggregate
+    `provenance.dispatch_path` is `TABLE_HIT` only when every frame hit
+    the table; otherwise `DIRECT_COMPUTE` and the per-frame mix is
+    summarized in `notes`.
+    """
+    if isinstance(target_substrates, SubstrateState):
+        targets = [target_substrates] * len(tau_obs_grid)
+    else:
+        targets = list(target_substrates)
+        if len(targets) != len(tau_obs_grid):
+            raise ValueError(
+                f"per-frame target list length {len(targets)} != "
+                f"tau_obs_grid length {len(tau_obs_grid)}"
+            )
+
+    trajectory: list[CanonicalState] = []
+    n_table = 0
+    n_fallback = 0
+    n_direct = 0
+    for i, tau in enumerate(tau_obs_grid):
+        out = forward_sweep_invert_wrapped(
+            targets[i], field, float(tau), canonical_search_grid,
+            score_fn=score_fn, forward_map=forward_map,
+            sidecar=sidecar, compute_round_trip=False,
+        )
+        trajectory.append(out.value)
+        if out.provenance.dispatch_path == DispatchPath.TABLE_HIT:
+            n_table += 1
+        elif out.provenance.dispatch_path == DispatchPath.COMPUTE_FALLBACK:
+            n_fallback += 1
+        else:
+            n_direct += 1
+
+    aggregate = (
+        DispatchPath.TABLE_HIT if n_table == len(tau_obs_grid)
+        else DispatchPath.DIRECT_COMPUTE
+    )
+    notes = (
+        f"frames: table_hit={n_table}, compute_fallback={n_fallback}, "
+        f"direct_compute={n_direct}",
+    )
+    report = _validation.report_for_tau_obs_sweep(trajectory)
+    prov = make_provenance(
+        "tau_obs_sweep",
+        dispatch_path=aggregate,
+        table_version=(sidecar.version if sidecar is not None else None),
+        notes=notes,
+    )
+    return OperationOutput(value=trajectory, validation=report, provenance=prov)
+
+
+def regime_at_wrapped(
+    canonical: CanonicalState,
+    tau_obs: float,
+) -> OperationOutput[RegimeReading]:
+    reading = regime_at(canonical, tau_obs)
+    report = _validation.report_for_regime_at(canonical)
+    prov = make_provenance("regime_at")
+    return OperationOutput(value=reading, validation=report, provenance=prov)
+
+
+def gamut_classify_wrapped(
+    canonical: CanonicalState,
+    tau_obs: float,
+    gamut: GamutSpec,
+) -> OperationOutput[dict[str, Any]]:
+    result = gamut_classify(canonical, tau_obs, gamut)
+    report = _validation.report_for_gamut_classify(canonical)
+    prov = make_provenance("gamut_classify")
+    return OperationOutput(value=result, validation=report, provenance=prov)
+
+
+def intent_map_wrapped(
+    out_of_gamut: CanonicalState,
+    tau_obs: float,
+    gamut: GamutSpec,
+    intent_id: str,
+) -> OperationOutput[tuple[CanonicalState, dict[str, Any]]]:
+    mapped, sacrifice = intent_map(out_of_gamut, tau_obs, gamut, intent_id)
+    report = _validation.report_for_intent_map(out_of_gamut, mapped, sacrifice)
+    prov = make_provenance("intent_map")
+    return OperationOutput(value=(mapped, sacrifice), validation=report, provenance=prov)
+
+
+def validate_driver_profile_wrapped(
+    field: AnyTranslationField,
+    reference_dataset: list[dict[str, Any]],
+    canonical_search_grid: np.ndarray,
+    *,
+    intent_id: str = "I5",
+) -> OperationOutput[dict[str, Any]]:
+    summary = validate_driver_profile(
+        field, reference_dataset, canonical_search_grid, intent_id=intent_id,
+    )
+    report = _validation.report_for_validate_driver_profile(summary)
+    prov = make_provenance("validate_driver_profile")
+    return OperationOutput(value=summary, validation=report, provenance=prov)

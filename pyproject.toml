@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mpa-scale-solver"
-version = "0.1.0"
-description = "MPA scale-management kernel: tau_obs projection and canonical-frame operations."
+version = "1.0.0"
+description = "MPA scale-management kernel: tau_obs projection, canonical-frame operations, continuous flow, Banach calibration."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "ronviers" }]
-keywords = ["mpa", "scale-management", "rg-flow", "tau_obs"]
+keywords = ["mpa", "scale-management", "rg-flow", "tau_obs", "banach", "tangent-flow"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
