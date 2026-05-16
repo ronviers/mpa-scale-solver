@@ -48,6 +48,7 @@ from typing import Callable, Iterable, Iterator, Optional, TextIO
 import numpy as np
 
 from .operations import forward_sweep_invert
+from .self_test import BanachDriftReport, SelfTestCadence
 from .types import (
     AnyTranslationField,
     CanonicalState,
@@ -94,6 +95,9 @@ def forward_sweep_invert_stream(
     *,
     tau_obs: Optional[float] = None,
     score_fn: Optional[Callable[[SubstrateState, SubstrateState], float]] = None,
+    self_test_cadence: Optional[SelfTestCadence] = None,
+    self_test_callback: Optional[Callable[[BanachDriftReport], None]] = None,
+    method: str = "auto",
 ) -> Iterator[InversionResult]:
     """Stream substrate observations through forward_sweep_invert per frame.
 
@@ -104,14 +108,28 @@ def forward_sweep_invert_stream(
     consumed as a stream).
 
     `canonical_grid` is the search grid used by the per-frame inversion.
-    Required for every field shape (lookup_table / tangent_flow /
-    learned) — the v5 streaming variant with gradient-based inversion
-    will lift this requirement for differentiable fields per BLOCK_IN
-    §v5. Until then, callers pass a grid sized to their accuracy /
-    latency budget.
+    For lookup-table fields it's the actual search grid; for tangent-flow
+    and learned fields under `method="auto"` (default) it's used as a
+    warm-start seed pool for the gradient / closed-form inversion (v5).
+    Either way it's required.
 
     `score_fn` is passed through to `forward_sweep_invert`; default is
     the L²-over-shared-numeric-keys score.
+
+    `method` selects the per-frame inversion strategy:
+      - `"auto"` (default): closed-form for tangent_flow, gradient (L-BFGS)
+        for learned, grid for lookup_table.
+      - `"grid"`: brute-force grid (v4 streaming behavior).
+      - `"gradient"`: gradient-based for differentiable fields; raises for
+        lookup_table.
+
+    `self_test_cadence` + `self_test_callback` (v5 — BLOCK_IN §v5):
+    when supplied, the cadence advances per **emitted frame** (every k-th
+    yielded `InversionResult` triggers a Banach self-test on the side).
+    The callback is invoked with the `BanachDriftReport` so consumers can
+    record drift without disturbing the primary stream shape. State-local:
+    the self-test does NOT feed back into the inversion — it's a pure
+    drift detector against the analytical Banach truth.
 
     Yields `InversionResult` per consumed observation. The generator is
     lazy: nothing is computed until the consumer pulls.
@@ -124,8 +142,11 @@ def forward_sweep_invert_stream(
     for i, obs in enumerate(observations):
         frame_tau = float(tau_obs) if tau_obs is not None else float(obs.tau_obs)
         state, residual = forward_sweep_invert(
-            obs, field, frame_tau, canonical_grid, score_fn=score_fn,
+            obs, field, frame_tau, canonical_grid,
+            score_fn=score_fn, method=method,
         )
+        if self_test_cadence is not None:
+            self_test_cadence.tick(callback=self_test_callback)
         yield InversionResult(
             state=state,
             residual=float(residual),

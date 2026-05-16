@@ -298,6 +298,7 @@ def forward_sweep_invert(
     score_fn: Optional[Callable[[SubstrateState, SubstrateState], float]] = None,
     forward_map: Optional[Callable[[CanonicalState, float], SubstrateState]] = None,
     return_residual_field: bool = False,
+    method: str = "auto",
 ) -> Union[
     tuple[CanonicalState, float],
     tuple[CanonicalState, float, np.ndarray],
@@ -310,6 +311,10 @@ def forward_sweep_invert(
     wins.
 
     canonical_grid: numpy array of shape (N, 2), columns [chit, gamma_AB].
+    For `method="grid"` (or lookup_table fields under `method="auto"`) this
+    is the search grid; for differentiable fields under `method="auto"` /
+    `"gradient"` it is the warm-start seed pool the gradient driver picks
+    its initial point from.
 
     score_fn: optional substrate-comparison callable. Defaults to
         L2 over shared numeric keys in observables + axes.
@@ -317,47 +322,237 @@ def forward_sweep_invert(
     forward_map: optional override for the canonical->substrate forward
         callable. Defaults to `apply_translation(...)` on the supplied
         field. Test fixtures pass an analytical forward map here (handoff
-        §C.2 step 1).
+        §C.2 step 1). When supplied, the grid path is forced (the override
+        is opaque to the gradient driver) regardless of `method`.
 
     return_residual_field: if True, also return the per-candidate residual
         array. Consumers compute conditioning estimates from this (the
-        bootstrap §7 caveat to ship the residual field).
+        bootstrap §7 caveat to ship the residual field). Grid is evaluated
+        regardless of `method` when this is requested — that's what the
+        residual field IS.
+
+    method (v5 — BLOCK_IN §v5): inversion strategy.
+        - `"auto"` (default): closed-form for `TangentFlowField`, gradient
+          (L-BFGS via `jax.scipy.optimize.minimize`) for `LearnedField`,
+          grid for `TranslationField` (lookup_table). The differentiable
+          paths recover canonical at float64 precision rather than at
+          grid resolution.
+        - `"grid"`: brute-force grid scan (v0–v4 behavior; byte-identical
+          to prior releases).
+        - `"gradient"`: gradient driver for `TangentFlowField` (closed-form
+          inverse) and `LearnedField` (BFGS); raises ValueError for
+          `TranslationField` (no differentiable surface).
     """
     if canonical_grid.ndim != 2 or canonical_grid.shape[1] != 2:
         raise ValueError(
             f"canonical_grid must have shape (N, 2); got {canonical_grid.shape}"
         )
+    if method not in ("auto", "grid", "gradient"):
+        raise ValueError(
+            f"unknown method: {method!r}; expected 'auto', 'grid', or 'gradient'"
+        )
     score_fn = score_fn or _default_substrate_score
+
+    # Effective method: "auto" resolves to per-field-shape choice.
+    # The `forward_map` override forces grid (the override is opaque).
+    if forward_map is not None:
+        effective_method = "grid"
+    elif method == "auto":
+        if isinstance(field, TangentFlowField):
+            effective_method = "tangent_flow_closed_form"
+        elif isinstance(field, LearnedField):
+            effective_method = "learned_bfgs"
+        else:
+            effective_method = "grid"
+    elif method == "gradient":
+        if isinstance(field, TangentFlowField):
+            effective_method = "tangent_flow_closed_form"
+        elif isinstance(field, LearnedField):
+            effective_method = "learned_bfgs"
+        else:
+            raise ValueError(
+                "method='gradient' requires a differentiable field "
+                "(TangentFlowField or LearnedField); got "
+                f"{type(field).__name__} (use method='grid' for lookup_table)."
+            )
+    else:
+        effective_method = "grid"
+
+    # Build the default forward_map for grid evaluation (and the gradient
+    # path's residual computation at the recovered point). The same closure
+    # the v0 path used — preserved verbatim under method='grid'.
     if forward_map is None:
         if isinstance(field, (TangentFlowField, LearnedField)):
-            # Closed-form forward map; no index needed.
             _field = field
-            def forward_map(c: CanonicalState, t: float) -> SubstrateState:  # type: ignore[misc]
+            def _grid_forward_map(c: CanonicalState, t: float) -> SubstrateState:
                 return apply_translation(c, _field, t)
         else:
-            index = TranslationFieldIndex(field)
-            def forward_map(c: CanonicalState, t: float) -> SubstrateState:  # type: ignore[misc]
-                return apply_translation(c, index, t)
+            _index = TranslationFieldIndex(field)
+            def _grid_forward_map(c: CanonicalState, t: float) -> SubstrateState:
+                return apply_translation(c, _index, t)
+        forward_map_for_grid = _grid_forward_map
+    else:
+        forward_map_for_grid = forward_map
 
-    n = canonical_grid.shape[0]
-    residuals = np.empty(n, dtype=np.float64)
-    for i in range(n):
-        candidate = CanonicalState(
-            chit=float(canonical_grid[i, 0]),
-            gamma_AB=float(canonical_grid[i, 1]),
+    # Grid path — runs when grid is the effective method OR when the
+    # caller asked for the residual field (the field IS the grid scan)
+    # OR as the warm-start seed for the gradient driver. Tangent-flow's
+    # closed-form inverse needs neither a seed nor the grid; skip it
+    # there so the BLOCK_IN §v5 10x-speedup vs grid actually lands.
+    need_grid_seed = effective_method == "learned_bfgs"
+    need_grid_field = return_residual_field
+    residuals: Optional[np.ndarray] = None
+    grid_best_idx: Optional[int] = None
+    grid_best_residual: Optional[float] = None
+    if effective_method == "grid" or need_grid_field or need_grid_seed:
+        n = canonical_grid.shape[0]
+        residuals = np.empty(n, dtype=np.float64)
+        for i in range(n):
+            candidate = CanonicalState(
+                chit=float(canonical_grid[i, 0]),
+                gamma_AB=float(canonical_grid[i, 1]),
+            )
+            predicted = forward_map_for_grid(candidate, tau_obs)
+            residuals[i] = score_fn(predicted, target_substrate)
+        grid_best_idx = int(np.argmin(residuals))
+        grid_best_residual = float(math.sqrt(residuals[grid_best_idx]))
+
+    if effective_method == "grid":
+        assert residuals is not None and grid_best_idx is not None
+        best_state = CanonicalState(
+            chit=float(canonical_grid[grid_best_idx, 0]),
+            gamma_AB=float(canonical_grid[grid_best_idx, 1]),
         )
-        predicted = forward_map(candidate, tau_obs)
-        residuals[i] = score_fn(predicted, target_substrate)
+        best_residual = float(grid_best_residual)  # type: ignore[arg-type]
+    elif effective_method == "tangent_flow_closed_form":
+        best_state = _invert_tangent_flow_closed_form(
+            target_substrate, field, tau_obs,  # type: ignore[arg-type]
+        )
+        best_residual = _residual_at(
+            best_state, forward_map_for_grid, tau_obs, target_substrate, score_fn,
+        )
+    elif effective_method == "learned_bfgs":
+        x0_chit, x0_gamma = (
+            float(canonical_grid[grid_best_idx, 0]),  # type: ignore[index]
+            float(canonical_grid[grid_best_idx, 1]),  # type: ignore[index]
+        )
+        best_state = _invert_learned_bfgs(
+            target_substrate, field, tau_obs,  # type: ignore[arg-type]
+            x0_chit=x0_chit, x0_gamma=x0_gamma,
+        )
+        best_residual = _residual_at(
+            best_state, forward_map_for_grid, tau_obs, target_substrate, score_fn,
+        )
+    else:  # pragma: no cover — unreachable; method validated above
+        raise AssertionError(f"unreachable effective_method: {effective_method!r}")
 
-    best_idx = int(np.argmin(residuals))
-    best_state = CanonicalState(
-        chit=float(canonical_grid[best_idx, 0]),
-        gamma_AB=float(canonical_grid[best_idx, 1]),
-    )
-    best_residual = float(math.sqrt(residuals[best_idx]))
     if return_residual_field:
+        assert residuals is not None
         return best_state, best_residual, residuals
     return best_state, best_residual
+
+
+def _residual_at(
+    state: CanonicalState,
+    forward_map: Callable[[CanonicalState, float], SubstrateState],
+    tau_obs: float,
+    target: SubstrateState,
+    score_fn: Callable[[SubstrateState, SubstrateState], float],
+) -> float:
+    """sqrt(score) at a recovered point — same scale as v0 `best_residual`."""
+    predicted = forward_map(state, tau_obs)
+    return float(math.sqrt(score_fn(predicted, target)))
+
+
+def _invert_tangent_flow_closed_form(
+    target: SubstrateState,
+    field: TangentFlowField,
+    tau_obs: float,
+) -> CanonicalState:
+    """Exact analytical inverse for tangent_flow (BLOCK_IN §v5 fast path).
+
+    Routes through `jax_ops.forward_sweep_invert_diff` which uses
+    `jax_core.tangent_flow_canonical_inverse`. The closed form needs
+    the substrate-observable keys `substrate_chit` / `substrate_gamma_AB`;
+    if either is missing the closed-form path can't run and we fall back
+    to a single-point evaluation at the canonical-from-axes seed (rare
+    — most consumers carry both keys via apply_translation).
+    """
+    from .jax_ops import forward_sweep_invert_diff
+
+    obs = target.observables
+    if "substrate_chit" in obs and "substrate_gamma_AB" in obs:
+        return forward_sweep_invert_diff(target, field, tau_obs)
+    # Substrate observables don't carry the tangent-flow output keys;
+    # fall through with identity recovery from the axes (matches v0
+    # behavior where the absent-keys score is 0 across all candidates).
+    return CanonicalState(
+        chit=float(obs.get("substrate_chit", target.axes.get("chit_label", 0.0))),
+        gamma_AB=float(obs.get("substrate_gamma_AB", 0.0)),
+    )
+
+
+def _invert_learned_bfgs(
+    target: SubstrateState,
+    field: LearnedField,
+    tau_obs: float,
+    *,
+    x0_chit: float,
+    x0_gamma: float,
+) -> CanonicalState:
+    """L-BFGS inversion for a LearnedField (BLOCK_IN §v5).
+
+    The forward map (`jax_core.learned_field_substrate`) is differentiable;
+    we minimize the squared-residual `||predicted - target||²` over
+    `(chit, gamma_AB)` via `scipy.optimize.minimize(method="L-BFGS-B")`
+    with `jax.grad`-provided gradients. Warm-started from the grid
+    argmin to avoid local minima.
+
+    (JAX dropped `jax.scipy.optimize` at 0.10 — we route through scipy
+    proper, which is already a transitive dep via JAX.)
+
+    The target's substrate keys (`substrate_chit` / `substrate_gamma_AB`)
+    are the v3 LearnedField output keys. Missing keys mean nothing to
+    optimize against; fall back to the warm-start seed unchanged.
+    """
+    import jax
+    import jax.numpy as jnp
+    from scipy.optimize import minimize as scipy_minimize
+    from .jax_core import learned_field_substrate
+    from .jax_ops import _learned_weights_as_jax
+
+    obs = target.observables
+    if "substrate_chit" not in obs or "substrate_gamma_AB" not in obs:
+        return CanonicalState(chit=x0_chit, gamma_AB=x0_gamma)
+
+    target_chit = jnp.asarray(obs["substrate_chit"], dtype=jnp.float64)
+    target_gamma = jnp.asarray(obs["substrate_gamma_AB"], dtype=jnp.float64)
+    weights = _learned_weights_as_jax(field)
+    tau_jax = jnp.asarray(tau_obs, dtype=jnp.float64)
+    ref_jax = jnp.asarray(field.tau_obs_ref, dtype=jnp.float64)
+    activation = field.activation
+
+    def cost(c: jnp.ndarray) -> jnp.ndarray:
+        s_chit, s_gamma = learned_field_substrate(
+            c[0], c[1], tau_jax, ref_jax, weights, activation=activation,
+        )
+        d_chit = s_chit - target_chit
+        d_gamma = s_gamma - target_gamma
+        return d_chit * d_chit + d_gamma * d_gamma
+
+    cost_grad = jax.grad(cost)
+
+    def numpy_cost(x: np.ndarray) -> float:
+        return float(cost(jnp.asarray(x, dtype=jnp.float64)))
+
+    def numpy_grad(x: np.ndarray) -> np.ndarray:
+        return np.asarray(cost_grad(jnp.asarray(x, dtype=jnp.float64)), dtype=np.float64)
+
+    x0 = np.array([x0_chit, x0_gamma], dtype=np.float64)
+    result = scipy_minimize(numpy_cost, x0, jac=numpy_grad, method="L-BFGS-B")
+    return CanonicalState(
+        chit=float(result.x[0]), gamma_AB=float(result.x[1]),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1169,6 +1364,7 @@ def forward_sweep_invert_wrapped(
     return_residual_field: bool = False,
     sidecar: Optional[InverseLookupSidecar] = None,
     compute_round_trip: bool = True,
+    method: str = "auto",
 ) -> OperationOutput[CanonicalState]:
     """Wrapped variant of `forward_sweep_invert`.
 
@@ -1179,6 +1375,9 @@ def forward_sweep_invert_wrapped(
     `compute_round_trip` controls whether the wrapped variant runs a
     forward-then-back recovery for the validation report's
     `round_trip_residual`. Default True; turn off in tight inner loops.
+
+    `method` (v5 — BLOCK_IN §v5): forwarded to `forward_sweep_invert`.
+    See that function's docstring for the dispatch table.
     """
     dispatch = DispatchPath.DIRECT_COMPUTE
     table_version: Optional[str] = None
@@ -1194,6 +1393,7 @@ def forward_sweep_invert_wrapped(
                 target_substrate, field, tau_obs, canonical_grid,
                 score_fn=score_fn, forward_map=forward_map,
                 return_residual_field=return_residual_field,
+                method=method,
             )
             recovered = result[0]
             if return_residual_field:
@@ -1204,6 +1404,7 @@ def forward_sweep_invert_wrapped(
             target_substrate, field, tau_obs, canonical_grid,
             score_fn=score_fn, forward_map=forward_map,
             return_residual_field=return_residual_field,
+            method=method,
         )
         recovered = result[0]
         if return_residual_field:

@@ -130,6 +130,45 @@
   matplotlib`) — matplotlib stays in test-extras; plotly is fully
   optional (no project dep). Animation / scrubber UIs deferred to
   mpa-auditor per the suite block-in.
+- **v5 continuous Banach self-test cadence:** `self_test.py` carries
+  `BanachDriftReport` + `run_banach_self_test` +
+  `SelfTestCadence(k=100, ...)`. Synchronous per-tick check —
+  microsecond-scale pure-Python ops; the "out-of-band where backend
+  permits" framing in BLOCK_IN is satisfied in spirit, with v6 native
+  getting a true second-thread implementation. Streaming integration:
+  `forward_sweep_invert_stream` takes `self_test_cadence` +
+  `self_test_callback` kwargs; the cadence advances per **emitted
+  frame** and the callback receives the `BanachDriftReport` on every
+  k-th frame. State-locality preserved — the self-test does NOT
+  feed back into the primary inversion.
+- **v5 sensitivity backprop:** `sensitivity.py` carries
+  `trajectory_substrate_diff(canonical, field, tau_obs_grid)` (per-frame
+  substrate observations, shape `(T, 2)`),
+  `trajectory_substrate_jacobian` (`∂substrate / ∂canonical` per frame,
+  shape `(T, 2, 2)`), `field_parameter_sensitivity`
+  (`∂substrate / ∂(delta_chit, delta_gamma, tau_obs_ref)` per frame,
+  shape `(T, 2, 3)`), `inversion_sensitivity`
+  (`∂canonical / ∂substrate` via the closed-form analytical inverse),
+  and the one-liner `driver_profile_loss_grad(loss_fn, canonical,
+  field, tau_obs_grid, observed)` that the BLOCK_IN §v5 promised.
+  Composes v2.0's per-op Jacobians from `jax_ops` through the full
+  audit traversal. Tangent-flow + learned only — lookup-table raises
+  NotImplementedError (no differentiable forward map). Observe-only:
+  no mutation of fields (frozen dataclasses).
+- **v5 gradient-based inversion:** `forward_sweep_invert` gains a
+  `method` kwarg with dispatch table — `"auto"` (default) routes
+  `TangentFlowField` to closed-form
+  (`jax_core.tangent_flow_canonical_inverse`, exact at float64),
+  `LearnedField` to L-BFGS (scipy's L-BFGS-B with `jax.grad`-provided
+  gradients, warm-started from grid argmin),
+  `TranslationField` (lookup_table) to grid (v0–v4 behavior).
+  `"grid"` forces v0–v4 byte-identical behavior on any shape;
+  `"gradient"` works on differentiable shapes only and raises for
+  lookup_table. `return_residual_field=True` always runs the grid
+  (that's what the field IS), but the best_state under `method="auto"`
+  remains the closed-form / gradient result. `forward_map=` override
+  forces grid (the override is opaque to the gradient driver).
+  Same kwarg lands on `forward_sweep_invert_wrapped`.
 
 Named family of operations, parallel to `mpa-solver`. Sibling, not nested.
 
@@ -285,11 +324,15 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
   thin source adapters), `symbolic_query` (5-pattern DSL),
   `plotting` (4 default plot helpers). Seven-op API unchanged.
   (Shipped 2026-05-16; 338 tests green.)
-- **v5**: continuous self-test cadence, sensitivity backprop (composes
-  jax_ops Jacobians into the full trajectory chain rule), gradient-
-  based inversion replacing grid search where invertible (jax_ops
-  already provides the tangent-flow closed-form; v5 generalizes to
-  learned / lookup-table-smooth-surrogate cases).
+- **v5**: continuous Banach self-test cadence + sensitivity backprop
+  + gradient-based inversion. New modules: `self_test`
+  (`BanachDriftReport` + `SelfTestCadence` + `run_banach_self_test`;
+  streaming cadence hook on `forward_sweep_invert_stream`),
+  `sensitivity` (trajectory + per-frame Jacobian composers + the
+  `driver_profile_loss_grad` one-liner). `forward_sweep_invert`
+  gains the `method` kwarg dispatching tangent_flow → closed-form,
+  learned → L-BFGS, lookup_table → grid. Seven-op API surface
+  unchanged. (Shipped 2026-05-16; 392 tests green.)
 - **v6**: one-shot native port (Rust or C++; language picked at session
   time). `jax_core.py` is the math source the port reads; the v0/v1
   operations are wrapper-shape only. Matches the v5 Python under
@@ -395,6 +438,39 @@ Five items met as of 2026-05-16:
 5. pyproject bumped to 2.0.0 with JAX as a hard dep; README +
    CLAUDE.md + BLOCK_IN.md updated.
 
+## Acceptance for the v5 build session
+
+Five items met as of 2026-05-16:
+
+1. v0 + v1 + v2 + v3 + v4 fixtures pass unchanged (338 prior tests
+   green plus 54 new v5 tests: 20 continuous-self-test, 18
+   sensitivity-backprop, 16 gradient-inversion). 392 tests total
+   green.
+2. Continuous self-test (`self_test.py`): `SelfTestCadence(k=100)`
+   default; per-tick `BanachDriftReport` agrees with the analytical
+   Banach truth at `<= DRIFT_TOLERANCE = 1e-10`; streaming hook
+   advances per emitted frame; state-locality verified (with-cadence
+   recovery byte-identical to without-cadence at `k=1`).
+3. Sensitivity backprop (`sensitivity.py`): five entries
+   (`trajectory_substrate_diff`, `trajectory_substrate_jacobian`,
+   `field_parameter_sensitivity`, `inversion_sensitivity`,
+   `driver_profile_loss_grad`). Closed-form chit/delta-chit
+   sensitivity verified against `log(tau/tau_ref)`; gradient direction
+   verified as loss-descent on a synthetic mis-specified field.
+4. Gradient-based inversion: `forward_sweep_invert(..., method="auto"|
+   "grid"|"gradient")`. `"auto"` (new default) routes tangent_flow
+   to closed-form (sub-grid-resolution recovery; `< 1e-12` per axis
+   on the Banach camera test where v4 was at `< 0.001`), learned to
+   L-BFGS (sub-grid recovery on the identity learned-field test),
+   lookup_table to grid (v4 byte-identical). Wrapped variant accepts
+   the same kwarg. `forward_map=` override forces grid;
+   `return_residual_field=True` always evaluates grid plus the
+   method-chosen best_state. `method="grid"` byte-identity preserved
+   across all 338 prior tests.
+5. README + CLAUDE.md updated; BLOCK_IN §v5 deleted; §v6 refined
+   with the v5 surface (self-test + sensitivity + method-dispatch)
+   that the native port must reproduce. Tagged `v5.0.0`.
+
 ## Session handoff
 
 The v0→v6 trajectory is governed by the **self-evolving block-in
@@ -402,7 +478,7 @@ handoff** at [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md). Each session that
 lands a version deletes its own §vN section from that doc and refines
 the remaining sections in place. Historical "what shipped" stays in
 this repo's `README.md` § Session Log. As of 2026-05-16 the block-in
-carries v5 → v6 only (v1–v4 shipped).
+carries v6 only (v1–v5 shipped).
 
 When opening a scale-solver session, read [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md)
 §vN for the version being built. Read [`docs/NORTH_STAR.md`](docs/NORTH_STAR.md)

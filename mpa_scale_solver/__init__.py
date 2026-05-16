@@ -99,6 +99,21 @@ from .streaming import (
     from_iterable,
     from_stdin,
 )
+from .self_test import (
+    # v5 continuous Banach self-test cadence (BLOCK_IN §v5)
+    BanachDriftReport,
+    DRIFT_TOLERANCE,
+    SelfTestCadence,
+    run_banach_self_test,
+)
+from .sensitivity import (
+    # v5 sensitivity backprop (BLOCK_IN §v5)
+    driver_profile_loss_grad,
+    field_parameter_sensitivity,
+    inversion_sensitivity,
+    trajectory_substrate_diff,
+    trajectory_substrate_jacobian,
+)
 from .symbolic_query import (
     # v4 symbolic query DSL (BLOCK_IN §v4)
     QueryParseError,
@@ -201,6 +216,17 @@ __all__ = [
     "QueryResult",
     "query",
     "supported_patterns",
+    # v5 continuous self-test cadence
+    "BanachDriftReport",
+    "DRIFT_TOLERANCE",
+    "SelfTestCadence",
+    "run_banach_self_test",
+    # v5 sensitivity backprop
+    "driver_profile_loss_grad",
+    "field_parameter_sensitivity",
+    "inversion_sensitivity",
+    "trajectory_substrate_diff",
+    "trajectory_substrate_jacobian",
     # v1 new functions / modules
     "flow",
     "BanachSubstrate",

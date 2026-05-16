@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mpa-scale-solver"
-version = "4.0.0"
-description = "MPA scale-management kernel: tau_obs projection, canonical-frame operations, continuous flow, Banach calibration, JAX-differentiable surface, cross-substrate ops, active learning, MCP server, learned translation fields, streaming inversion, symbolic-query DSL, notebook ergonomics + plot hooks."
+version = "5.0.0"
+description = "MPA scale-management kernel: tau_obs projection, canonical-frame operations, continuous flow, Banach calibration, JAX-differentiable surface, cross-substrate ops, active learning, MCP server, learned translation fields, streaming inversion, symbolic-query DSL, notebook ergonomics + plot hooks, continuous Banach self-test cadence, sensitivity backprop, gradient-based inversion."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

@@ -1,18 +1,19 @@
-# mpa-scale-solver — v5→v6 block-in handoff
+# mpa-scale-solver — v6 block-in handoff
 
-Self-evolving trajectory handoff. v1–v4 shipped 2026-05-16: v1.0.0
+Self-evolving trajectory handoff. v1–v5 shipped 2026-05-16: v1.0.0
 (continuous flow + Banach + sidecar), v2.0.0 (JAX foundation, cut a),
 v2.1.0 (Bayesian inversion via Laplace, cut b), v2.3.0 (full I1–I5
 intents + composition, cut d), v2.4.0 (non-Markovian Caputo flow via
 Prony, cut e), v3.0.0 (cross-substrate ops + active learning + MCP
 server + LearnedField + per-intent RFC-S §5 metrics), v4.0.0
 (streaming inversion + symbolic-query DSL + notebook ergonomics +
-default plot hooks). Cut (c) "N-mode generalization" cancelled
-2026-05-16 — premise overturned by framework cross-check; the 2-mode
-CanonicalState is the framework's universal canonical representation,
-not a 2-mode-as-N=2-special-case (see §v2.2-cancelled tombstone
-below).
-What remains: v5 → v6.
+default plot hooks), v5.0.0 (continuous Banach self-test cadence +
+sensitivity backprop + gradient-based inversion). Cut (c) "N-mode
+generalization" cancelled 2026-05-16 — premise overturned by
+framework cross-check; the 2-mode CanonicalState is the framework's
+universal canonical representation, not a 2-mode-as-N=2-special-case
+(see §v2.2-cancelled tombstone below).
+What remains: v6.
 
 This document is the single brief that carries from one session to the
 next. It is **not** a roadmap — sequencing lives in
@@ -51,16 +52,12 @@ always — refine in place).
 
 | Version | Theme | Depends on |
 |---|---|---|
-| v1–v4 | Foundation, JAX, Bayesian, intents, Caputo, cross-substrate, active learning, MCP, LearnedField, streaming + DSL + notebook ergonomics — all shipped 2026-05-16 (see README §Session Log) | — (shipped) |
+| v1–v5 | Foundation, JAX, Bayesian, intents, Caputo, cross-substrate, active learning, MCP, LearnedField, streaming + DSL + notebook ergonomics, continuous self-test + sensitivity backprop + gradient inversion — all shipped 2026-05-16 (see README §Session Log) | — (shipped) |
 | ~~v2.2~~ | ~~N-mode generalization (cut c)~~ — cancelled 2026-05-16; tombstone retained below | — |
-| **v5** | Continuous Banach self-test cadence + sensitivity backprop + gradient-based inversion replacing grid where invertible | v2.0 |
 | **v6** | One-shot native port (Rust or C++). Zero new features. Per-seed reproducibility against the v5 Python. | v5 |
 
-Sequencing is the user's call per ROADMAP. v5's dependency is v2.0
-(sensitivity_backprop / gradient-based inversion only need the JAX
-foundation); v4 is not load-bearing for v5 capabilities but its
-streaming surface is where v5's continuous self-test cadence applies
-per emitted frame — §v5 refinement below.
+Sequencing is the user's call per ROADMAP. v6 is the only remaining
+version; the API surface and capability set are frozen as of v5.
 
 ---
 
@@ -140,70 +137,6 @@ such re-opening per CLAUDE.md's no-eighth-operation rule.
 
 ---
 
-## §v5 — Continuous Banach self-test + sensitivity backprop + gradient-based inversion
-
-**Goal.** Last functional version before native port. Continuous
-self-test cadence against Banach. Sensitivity backprop through the
-RG-flow trajectory enables driver-profile hyperparameter
-optimization. Gradient-based inversion fully replaces grid search in
-monotonic regions (grid stays for ambiguity).
-
-**Capabilities to land.**
-
-- **Continuous self-test** — every k-th operation call (configurable,
-  default k=100) runs a side-test on the Banach substrate. Drift
-  reported with full diagnostic state. ECC for compute. Self-tests
-  are async / out-of-band where backend permits; never block the
-  primary call. For the v4 streaming surface
-  (`forward_sweep_invert_stream`), the cadence applies per **emitted
-  frame** — every k-th `InversionResult` yielded by the generator
-  triggers a Banach self-test on the side. State-locality is
-  preserved (the self-test does not feed back into the primary
-  inversion); the self-test result rides on a side channel
-  (separate generator, optional callback, or trailing diagnostic
-  appended to the stream — design call at v5 session time).
-- **Sensitivity backprop** — full chain rule through
-  `apply_translation → forward_sweep_invert → tau_obs_sweep` (the
-  audit traversal). Builds on v2.0's `jax_core` /
-  `jax_ops.tangent_flow_forward_jacobian`; v5 composes the per-op
-  Jacobians into the full trajectory chain rule. Driver-profile
-  hyperparameter optimization becomes a one-liner.
-- **Gradient-based inversion** — `forward_sweep_invert` defaults to
-  gradient-based (L-BFGS / Newton) in monotonic regions; falls back
-  to v2's grid for ambiguity. Grid remains available via
-  `method="grid"` for back-compat and ambiguity reporting. Tangent-
-  flow already lands closed-form via v2.0's
-  `jax_ops.forward_sweep_invert_diff`; v5 generalizes to learned-
-  field (v3 `LearnedField` shape — `learned_field_substrate_diff` is
-  already differentiable, so v5 only needs the inversion driver) and
-  lookup-table-with-smooth-surrogate cases.
-
-**Acceptance.**
-
-- v0 + v1 + v2 + v3 + v4 fixtures pass unchanged.
-- New: `test_continuous_self_test.py`, `test_sensitivity_backprop.py`,
-  `test_gradient_inversion.py`.
-- Performance: gradient-based inversion ≥10× faster than grid on the
-  Banach substrate; matches grid within tolerance.
-- README + CLAUDE.md updated; §v5 deleted; §v6 refined with the
-  exact per-seed reproducibility frontier the port must match.
-- Tagged `v5.0.0`.
-
-**Dependencies.** v2 shipped (the minimum). v3/v4 optional.
-
-**Open / watch.**
-
-- Self-test cadence overhead: 1/k call cost. k=100 is the default
-  starting point; profile and adjust per backend.
-- Gradient-based inversion in ambiguous regions: silent fall-back to
-  grid vs explicit ambiguity report. Default to explicit report
-  (matches the "Bayesian posterior over point estimates" v2 stance).
-- Active-learning composability: v3's `suggest_measurements` returns
-  a composite score. v5's gradient-based inversion can pick MCMC
-  starting points from these candidates if they earn weight.
-
----
-
 ## §v6 — Native port (Rust or C++). Zero new features.
 
 **Goal.** One-shot consolidation. Language pick at session time:
@@ -219,9 +152,29 @@ browser-side execution becomes load-bearing.
 - Seven operations + `flow` + wrapped variants.
 - All translation-field shapes (lookup_table, tangent_flow, learned).
 - Banach substrate + sidecar + InverseLookupSidecar dispatch.
-- Continuous self-test cadence.
-- Sensitivity backprop (via the native autodiff library — `enzyme`
+- **Continuous self-test cadence** — `self_test.py`'s
+  `SelfTestCadence` + `BanachDriftReport` + `run_banach_self_test`.
+  v5 ran the cadence synchronously per tick (microsecond-scale
+  pure-Python ops); v6 can run it on a separate OS thread / pinned
+  core trivially and have it truly out-of-band per the BLOCK_IN
+  framing. The streaming-side hook (cadence + callback on
+  `forward_sweep_invert_stream`) is the integration surface to
+  reproduce.
+- **Sensitivity backprop** (via the native autodiff library — `enzyme`
   for Rust, `autodiff` / hand-written for C++; pick at session time).
+  v5 modules to reproduce: `sensitivity.py`'s
+  `trajectory_substrate_diff`, `trajectory_substrate_jacobian`,
+  `field_parameter_sensitivity`, `inversion_sensitivity`, and
+  the one-liner `driver_profile_loss_grad`. All compose
+  `jax_core` / `jax_ops` primitives through the audit traversal.
+- **Gradient-based inversion** — `forward_sweep_invert`'s `method`
+  kwarg dispatch: `"auto"` (default) routes tangent_flow to
+  closed-form (`jax_core.tangent_flow_canonical_inverse`), learned
+  to L-BFGS, lookup_table to grid. The v5 Python uses scipy's
+  L-BFGS-B with `jax.grad` for the learned path; the v6 port
+  swaps to its native optimizer + autodiff (Rust: `argmin` + `enzyme`;
+  C++: `dlib` / hand-rolled + `autodiff`). The closed-form tangent_flow
+  path is pure arithmetic — direct port.
 - Streaming + symbolic query + cross-substrate ops + active learning +
   Bayesian + Caputo + full intents (I1–I5) + composition.
 - MCP server (port via the native MCP SDK once one exists; or keep
@@ -232,7 +185,13 @@ browser-side execution becomes load-bearing.
 math the port reads. Every primitive in jax_core has a 1:1 native
 counterpart; the Python-level operations.py / flow.py / banach.py
 are wrapper-shape only. Read jax_core first when porting; read
-operations.py for surface / dispatch behavior.
+operations.py for surface / dispatch behavior. The v5 additions
+that became part of the math surface: nothing new in `jax_core`
+itself (v5 only composed existing primitives in `sensitivity.py`);
+the `_invert_learned_bfgs` driver in `operations.py` is the one
+function whose Python form leaks into solver behavior — it uses
+scipy's BFGS, and the v6 port's choice of native optimizer must
+converge to the same `(chit, gamma_AB)` MAP within tolerance.
 
 **Zero additions.** If v6 needs a capability that isn't in v5, that
 capability lands in v5 first via a v5.x release.
@@ -246,10 +205,18 @@ capability lands in v5 first via a v5.x release.
   outputs across Python, native single-threaded, native multi-threaded,
   WASM (if produced).
 - Performance: deterministic ops ≥10× faster than v5 Python single-
-  thread; stochastic ensembles ≥50× faster with parallelism.
+  thread; stochastic ensembles ≥50× faster with parallelism. v5's
+  closed-form tangent-flow inversion is already O(1) per call; the
+  native port's win there is mainly compile-time overhead removal
+  + tighter inner-loop dispatch (the BLOCK_IN's "≥10× faster than
+  grid" target was met inside v5; v6 doubles down via SIMD on the
+  multi-frame `tau_obs_sweep` and `trajectory_substrate_jacobian`
+  pathways).
 - Python bindings (pybind11 / pyo3) — mpa-conform's
   `import mpa_scale_solver` works unchanged. The whole point: the
-  consumer surface doesn't notice.
+  consumer surface doesn't notice. The `method` kwarg semantics
+  and `SelfTestCadence` / `BanachDriftReport` shapes are part of
+  this contract.
 - This document deletes entirely. The
   [`mpa-scale-solver/README.md`](https://github.com/ronviers/mpa-scale-solver/blob/main/README.md)
   § Session Log carries the history; per-version git tags carry the
@@ -267,6 +234,18 @@ capability lands in v5 first via a v5.x release.
   has materialized by then. Skip otherwise — the inverse-lookup-table
   sidecar pattern already sidesteps browser-side scale-solver
   execution.
+- L-BFGS implementation choice for the learned-field inversion path:
+  v5 uses scipy's L-BFGS-B (well-tested, default tolerances). v6
+  picks a native optimizer (Rust `argmin`, C++ `dlib` or
+  hand-rolled). Convergence tolerance choice affects bit-identity
+  budget on the learned-field MAP point; document the chosen
+  tolerance and verify against the v5 Python on the
+  `test_learned_field.py::TestForwardSweepInvertLearned` recovery
+  set.
+- Self-test cadence threading: v5 synchronous; v6 can run on a
+  separate native thread per stream. The `BanachDriftReport` shape
+  is plain-struct and thread-safe to pass; the cadence's call
+  counter needs atomic increment if shared across producer threads.
 
 ---
 
@@ -276,14 +255,17 @@ capability lands in v5 first via a v5.x release.
    three-layer split. Don't drift across layers.
 2. [`NORTH_STAR.md`](NORTH_STAR.md) —
    the destination. Every version session points here.
-3. This document — what remains.
-4. The §vN section for the version being shipped.
-5. [`../CLAUDE.md`](../CLAUDE.md) —
-   sibling-kernel discipline + per-call discipline.
-6. The relevant RFC-S sections + v9_receipts + cdv1_receipts entries.
-7. Prior version's release notes in
+3. This document — §v6 is the only remaining version.
+4. [`../CLAUDE.md`](../CLAUDE.md) —
+   sibling-kernel discipline + per-call discipline. The "Python is
+   the pseudo-code spec for v6" rule is now load-bearing: read v5's
+   `jax_core.py`, `sensitivity.py`, `self_test.py`, and the
+   `forward_sweep_invert` dispatch in `operations.py` as the port's
+   reference.
+5. The relevant RFC-S sections + v9_receipts + cdv1_receipts entries.
+6. Prior version's release notes in
    [`../README.md`](../README.md)
    § Session Log — the historical record this document doesn't carry.
 
-Ship one version per session. Refine the block-in inline as you go.
-Delete §vN when it lands.
+When v6 ships, this document deletes entirely. The README session log
++ the per-version git tags are the residue.
