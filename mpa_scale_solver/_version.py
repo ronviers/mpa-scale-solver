@@ -4,4 +4,4 @@ Lives in its own module so provenance / validation / sidecar can read it
 without circular-importing the package root.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"

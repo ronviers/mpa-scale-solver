@@ -870,3 +870,102 @@ def validate_driver_profile_wrapped(
     report = _validation.report_for_validate_driver_profile(summary)
     prov = make_provenance("validate_driver_profile")
     return OperationOutput(value=summary, validation=report, provenance=prov)
+
+
+# ---------------------------------------------------------------------------
+# v2.1: Bayesian inversion (Laplace approximation around MAP) — BLOCK_IN cut b
+# ---------------------------------------------------------------------------
+#
+# Returns `Posterior` instead of `CanonicalState`. The return-type contract
+# differs from `forward_sweep_invert`, so this is a separate function rather
+# than an overloaded kwarg on the existing wrapped variant (the BLOCK_IN
+# sketched a kwarg form; the separate-function shape was the v2.1 design
+# call — see BLOCK_IN refinement). The wrapped variant
+# `forward_sweep_invert_posterior_wrapped` follows the established
+# *_wrapped pattern with validation + provenance.
+
+def forward_sweep_invert_posterior(
+    target_substrate: SubstrateState,
+    field: AnyTranslationField,
+    tau_obs: float,
+    *,
+    canonical_grid: Optional[np.ndarray] = None,
+    noise_variance: float = 1.0,
+    k_frust: bool = False,
+    score_fn: Optional[Callable[[SubstrateState, SubstrateState], float]] = None,
+    top_k: int = 5,
+):
+    """Bayesian inversion: returns the Laplace-approximation posterior.
+
+    Dispatches on `field.shape`:
+      - `tangent_flow`: closed-form fast path via
+        `jax_ops.tangent_flow_posterior`. MAP is exact (analytical
+        inverse), covariance is `noise_variance * inv(J^T J)`.
+        `canonical_grid` is ignored.
+      - `lookup_table`: weighted-moment estimate via
+        `jax_ops.lookup_table_posterior`. MAP is the brute-force
+        grid argmin; covariance is the softmax-weighted moments over
+        the `top_k` lowest-residual candidates. `canonical_grid` is
+        required (the search grid the brute-force inversion uses).
+
+    `noise_variance` is the assumed observation-noise variance in the
+    substrate-observable space. Default 1.0 gives covariance
+    interpretable as a relative-uncertainty surface; pass a calibrated
+    value for proper posterior credible regions.
+    """
+    from .jax_ops import lookup_table_posterior, tangent_flow_posterior
+
+    if isinstance(field, TangentFlowField):
+        return tangent_flow_posterior(
+            target_substrate, field, tau_obs,
+            noise_variance=noise_variance, k_frust=k_frust,
+        )
+    if isinstance(field, TranslationField):
+        if canonical_grid is None:
+            raise ValueError(
+                "forward_sweep_invert_posterior requires canonical_grid for "
+                "lookup_table fields (the search grid the brute-force "
+                "inversion uses)."
+            )
+        return lookup_table_posterior(
+            target_substrate, field, tau_obs, canonical_grid,
+            noise_variance=noise_variance, k_frust=k_frust,
+            score_fn=score_fn, top_k=top_k,
+        )
+    raise TypeError(f"unsupported translation field type: {type(field).__name__}")
+
+
+def forward_sweep_invert_posterior_wrapped(
+    target_substrate: SubstrateState,
+    field: AnyTranslationField,
+    tau_obs: float,
+    *,
+    canonical_grid: Optional[np.ndarray] = None,
+    noise_variance: float = 1.0,
+    k_frust: bool = False,
+    score_fn: Optional[Callable[[SubstrateState, SubstrateState], float]] = None,
+    top_k: int = 5,
+) -> OperationOutput[Any]:
+    """Wrapped variant of `forward_sweep_invert_posterior`.
+
+    Returns `OperationOutput[Posterior]` with validation + provenance.
+    Validation flags the MAP point's asymptotic-closure compliance and
+    flags a non-finite log-evidence if the covariance was singular.
+    """
+    posterior = forward_sweep_invert_posterior(
+        target_substrate, field, tau_obs,
+        canonical_grid=canonical_grid,
+        noise_variance=noise_variance,
+        k_frust=k_frust,
+        score_fn=score_fn,
+        top_k=top_k,
+    )
+    # Reuse the apply_translation validation shape for the MAP point's
+    # asymptotic-closure check (the canonical at MAP rides through the
+    # same gate as the other operations' canonical-state outputs).
+    report = _validation.report_for_forward_sweep_invert(
+        target_substrate, posterior.mean,
+        round_trip_residual=None,
+    )
+    prov = make_provenance("forward_sweep_invert_posterior")
+    return OperationOutput(value=posterior, validation=report, provenance=prov)

@@ -45,6 +45,8 @@ from .types import (
     ScalingRule,
     TangentFlowField,
     ValidationReport,
+    # v2.1 addition
+    Posterior,
 )
 from .operations import (
     # v0 sigs unchanged
@@ -66,6 +68,9 @@ from .operations import (
     gamut_classify_wrapped,
     intent_map_wrapped,
     validate_driver_profile_wrapped,
+    # v2.1 Bayesian inversion
+    forward_sweep_invert_posterior,
+    forward_sweep_invert_posterior_wrapped,
 )
 from .flow import flow
 from .banach import BanachSubstrate, build_sidecar_for_banach
@@ -111,6 +116,8 @@ __all__ = [
     "ScalingRule",
     "TangentFlowField",
     "ValidationReport",
+    # types — v2.1
+    "Posterior",
     # operations — v0
     "apply_translation",
     "forward_sweep_invert",
@@ -130,6 +137,9 @@ __all__ = [
     "gamut_classify_wrapped",
     "intent_map_wrapped",
     "validate_driver_profile_wrapped",
+    # operations — v2.1 (Bayesian inversion)
+    "forward_sweep_invert_posterior",
+    "forward_sweep_invert_posterior_wrapped",
     # v1 new functions / modules
     "flow",
     "BanachSubstrate",

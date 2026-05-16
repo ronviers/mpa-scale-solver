@@ -284,6 +284,48 @@ class OperationOutput(Generic[T]):
 
 
 # ---------------------------------------------------------------------------
+# v2.1: Laplace-approximation posterior over canonical states
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Posterior:
+    """Laplace-approximation posterior over canonical states (BLOCK_IN cut b).
+
+    Returned by `operations.forward_sweep_invert_posterior` and its
+    wrapped variant. Captures both the MAP point estimate (`mean`) and
+    a Gaussian uncertainty estimate (`covariance`) around it.
+
+    `noise_variance` is the assumed observation-noise variance (sigma^2)
+    in the substrate-observable space. Consumers that have a calibrated
+    noise model pass it explicitly; the default 1.0 gives covariance
+    proportional to inv(J^T J) which is interpretable as a relative
+    uncertainty surface.
+
+    `log_evidence` is the log-marginal-likelihood under the Laplace
+    approximation:
+
+        log p(y) ≈ -0.5 ||residual||^2 / sigma^2
+                   + 0.5 * log det(2*pi*sigma^2)
+                   - 0.5 * log det((1/sigma^2) Hessian)
+
+    Optional; populated for tangent-flow (closed-form) and lookup-table
+    (sampled) posteriors. None when the consumer disables computation.
+
+    `modes` carries additional MAP candidates for multi-modal posteriors
+    (the ambiguity-set first-class outputs the v2 plan called out).
+    Empty for v2.1's single-mode Laplace; v3 active-learning is expected
+    to extend this.
+    """
+
+    mean: CanonicalState
+    covariance: tuple[tuple[float, float], tuple[float, float]]
+    noise_variance: float = 1.0
+    log_evidence: Optional[float] = None
+    modes: tuple[CanonicalState, ...] = ()
+    notes: tuple[str, ...] = ()
+
+
+# ---------------------------------------------------------------------------
 # v1: inverse-lookup-table sidecar
 # ---------------------------------------------------------------------------
 

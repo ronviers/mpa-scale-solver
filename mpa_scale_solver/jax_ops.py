@@ -7,22 +7,23 @@ arrays instead of dataclasses, so the result is differentiable under
 `jax.grad` / `jax.jacobian` / `jax.hessian`.
 
 The seven-operation API in `operations.py` is unchanged; this module
-adds a parallel `*_diff` surface that v2+ consumers opt into. Per
-BLOCK_IN.md §v2 cut (a), these are the JAX-foundation primitives that
-v2.1's Bayesian inversion (Laplace around MAP) and v5's gradient-based
-forward_sweep_invert will compose on top of.
+adds a parallel surface that v2+ consumers opt into.
 
-Three top-level entries:
+Top-level entries:
   - `tangent_flow_substrate_diff` — forward map (canonical -> substrate)
     for tangent-flow fields. Differentiable in canonical coordinates
     and in field parameters.
   - `flow_diff` — continuous-form flow on tangent-flow fields. Banach
     exponential and generic tangent-flow branches mirror the v1
     `flow.flow()` dispatch.
-  - `forward_sweep_invert_diff` — gradient-based inversion for tangent-
-    flow fields via L-BFGS, with the brute-force grid retained for
-    lookup_table fields (argmin is non-differentiable through the rule
-    choice; gradient inversion does not apply).
+  - `tangent_flow_forward_jacobian` — 2x2 Jacobian of the forward map
+    at the given canonical state.
+  - `forward_sweep_invert_diff` — exact closed-form analytical inverse
+    for tangent-flow fields (differentiable through the target).
+  - `banach_state_diff` — differentiable Banach analytical canonical
+    state.
+  - `tangent_flow_posterior` / `lookup_table_posterior` — v2.1 Laplace
+    approximation posteriors over canonical states (BLOCK_IN cut b).
 
 All entries import `jax_pytree` for CanonicalState PyTree registration
 (side-effect on first import; idempotent).
@@ -30,15 +31,18 @@ All entries import `jax_pytree` for CanonicalState PyTree registration
 
 from __future__ import annotations
 
+import math
 from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from . import jax_pytree  # noqa: F401 — side-effect: PyTree registration
 from .banach import BanachSubstrate
 from .jax_core import (
     banach_state,
+    laplace_covariance_from_jacobian,
     tangent_flow_canonical,
     tangent_flow_canonical_inverse,
     tangent_flow_substrate,
@@ -226,6 +230,166 @@ def forward_sweep_invert_diff(
         chit=float(inv_chit),
         gamma_AB=float(inv_gamma),
         k_frust=k_frust,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Posterior (Laplace approximation) — v2.1 BLOCK_IN cut b
+# ---------------------------------------------------------------------------
+
+def tangent_flow_posterior(
+    target_substrate: SubstrateState,
+    field: TangentFlowField,
+    tau_obs: float,
+    *,
+    noise_variance: float = 1.0,
+    k_frust: bool = False,
+):
+    """Laplace-approximation posterior for tangent-flow inversion.
+
+    Fast-path (closed-form):
+      - MAP = `forward_sweep_invert_diff` (exact analytical inverse)
+      - Residual at MAP = 0 (exact)
+      - Hessian at MAP = (1/sigma^2) J^T J where J is the forward-map
+        Jacobian
+      - Posterior covariance = sigma^2 * inv(J^T J)
+      - Log-evidence reduces to the noise-prior-only normalizer (since
+        the residual term vanishes)
+
+    Returns a `Posterior` (imported lazily to avoid cycles).
+    """
+    from .types import Posterior
+
+    map_estimate = forward_sweep_invert_diff(
+        target_substrate, field, tau_obs, k_frust=k_frust,
+    )
+    jac = tangent_flow_forward_jacobian(map_estimate, field, tau_obs)
+    cov = laplace_covariance_from_jacobian(
+        jac, jnp.asarray(noise_variance, dtype=jnp.float64),
+    )
+    cov_np = np.asarray(cov)
+    cov_tuple = (
+        (float(cov_np[0, 0]), float(cov_np[0, 1])),
+        (float(cov_np[1, 0]), float(cov_np[1, 1])),
+    )
+
+    # Log evidence at zero residual:
+    #   log p(y) = -0.5 * dim_y * log(2*pi*sigma^2)
+    #              + 0.5 * dim_c * log(2*pi)
+    #              - 0.5 * log det((1/sigma^2) J^T J)
+    dim_y = 2  # substrate_chit, substrate_gamma_AB
+    dim_c = 2
+    jtj = jac.T @ jac
+    log_det_precision = float(jnp.linalg.slogdet(jtj / noise_variance)[1])
+    log_evidence = float(
+        -0.5 * dim_y * math.log(2.0 * math.pi * noise_variance)
+        + 0.5 * dim_c * math.log(2.0 * math.pi)
+        - 0.5 * log_det_precision
+    )
+
+    return Posterior(
+        mean=map_estimate,
+        covariance=cov_tuple,
+        noise_variance=float(noise_variance),
+        log_evidence=log_evidence,
+        modes=(),
+        notes=("laplace_from_closed_form_jacobian",),
+    )
+
+
+def lookup_table_posterior(
+    target_substrate: SubstrateState,
+    field: TranslationField,
+    tau_obs: float,
+    canonical_grid,
+    *,
+    noise_variance: float = 1.0,
+    k_frust: bool = False,
+    score_fn=None,
+    top_k: int = 5,
+):
+    """Weighted-moment posterior for lookup-table inversion.
+
+    Discrete grids don't have a meaningful Hessian (the residual is a
+    step function over candidates), so the Laplace formula doesn't
+    apply directly. Instead we treat the residual field as defining an
+    unnormalized log-posterior
+
+        log p(c | y) ∝ -0.5 * R(c) / sigma^2
+
+    and report the moments of the resulting discrete distribution.
+    Concentrating on the `top_k` lowest-residual candidates keeps the
+    estimate insensitive to far-tail candidates that contribute
+    essentially nothing.
+
+    MAP = argmin candidate. Mean / covariance computed from the
+    softmax-weighted moments over the top_k candidates. For k=1 this
+    degenerates to a delta posterior at MAP with zero covariance (we
+    add `noise_variance / 1.0` to the diagonal as a minimum-resolution
+    proxy in that case so the result remains usable as a covariance).
+    """
+    from .operations import forward_sweep_invert
+    from .types import Posterior
+
+    map_state, _residual, residual_field = forward_sweep_invert(
+        target_substrate, field, tau_obs, canonical_grid,
+        score_fn=score_fn, return_residual_field=True,
+    )
+    map_with_kfrust = CanonicalState(
+        chit=map_state.chit, gamma_AB=map_state.gamma_AB, k_frust=k_frust,
+    )
+
+    # Top-k indices by residual
+    n = residual_field.shape[0]
+    k = max(1, min(int(top_k), n))
+    order = np.argsort(residual_field)
+    idx = order[:k]
+    top_residuals = residual_field[idx]
+    top_points = canonical_grid[idx]
+
+    if k == 1:
+        # Degenerate: single candidate. Return MAP with noise-floor
+        # covariance as a minimum-resolution proxy.
+        cov_tuple = (
+            (float(noise_variance), 0.0),
+            (0.0, float(noise_variance)),
+        )
+        return Posterior(
+            mean=map_with_kfrust,
+            covariance=cov_tuple,
+            noise_variance=float(noise_variance),
+            log_evidence=None,
+            modes=(),
+            notes=("lookup_table_grid_top_k=1_delta_with_noise_floor",),
+        )
+
+    # log-weights: shift by min for numerical stability before exp
+    log_weights = -0.5 * top_residuals / max(noise_variance, 1e-300)
+    log_weights = log_weights - log_weights.max()
+    weights = np.exp(log_weights)
+    weights = weights / weights.sum()
+
+    mean_chit = float(np.sum(weights * top_points[:, 0]))
+    mean_gamma = float(np.sum(weights * top_points[:, 1]))
+
+    dchit = top_points[:, 0] - mean_chit
+    dgamma = top_points[:, 1] - mean_gamma
+    cov_cc = float(np.sum(weights * dchit * dchit))
+    cov_cg = float(np.sum(weights * dchit * dgamma))
+    cov_gg = float(np.sum(weights * dgamma * dgamma))
+    cov_tuple = ((cov_cc, cov_cg), (cov_cg, cov_gg))
+
+    posterior_mean = CanonicalState(
+        chit=mean_chit, gamma_AB=mean_gamma, k_frust=k_frust,
+    )
+
+    return Posterior(
+        mean=posterior_mean,
+        covariance=cov_tuple,
+        noise_variance=float(noise_variance),
+        log_evidence=None,
+        modes=(map_with_kfrust,) if (map_with_kfrust.chit, map_with_kfrust.gamma_AB) != (mean_chit, mean_gamma) else (),
+        notes=(f"lookup_table_weighted_moments_top_k={k}",),
     )
 
 

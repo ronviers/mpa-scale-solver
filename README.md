@@ -55,6 +55,18 @@ math primitives and `mpa_scale_solver.jax_ops` for the consumer surface:
 - `banach_state_diff(substrate, nu)` — differentiable Banach
   analytical canonical state.
 
+v2.1 adds Bayesian inversion on top of the v2.0 foundation:
+
+- `forward_sweep_invert_posterior(target, field, tau_obs, ...)` —
+  returns a `Posterior` (mean, covariance, log-evidence) via Laplace
+  approximation around the MAP. Tangent-flow uses the closed-form fast
+  path (`covariance = noise_variance * inv(J^T J)`); lookup-table uses
+  a softmax-weighted moment fit over the top-k lowest-residual
+  candidates.
+- `forward_sweep_invert_posterior_wrapped(...)` — `OperationOutput[Posterior]`
+  with validation + provenance, following the established `*_wrapped`
+  pattern.
+
 `CanonicalState` is registered as a JAX PyTree (leaves: `(chit,
 gamma_AB)`; aux: `k_frust`) so `jax.grad` / `jax.jacobian` /
 `jax.hessian` work directly on CanonicalState-typed callbacks. Float64
@@ -161,3 +173,4 @@ per-frame EXR channels mpa-conform assembles using outputs from this repo.
 | 2026-05-15 | Python v0.1.0 build | Seven operations shipped; gfdr_model.js ported (5-bucket); camera test passes max\|residual\| = 0.012 vs tolerance 0.05; all three seed-corpus profiles pass round-trip closure. |
 | 2026-05-16 | Python v1.0.0 build | Tangent-flow translation field + continuous `flow()` + Banach calibration substrate + inverse-lookup-table sidecar dispatch + per-call self-validation + full provenance trail. Seven wrapped variants (`*_wrapped`) returning `OperationOutput[T]`. Banach camera test passes max\|residual\| < 0.001. All v0 fixtures pass unchanged. |
 | 2026-05-16 | Python v2.0.0 build (BLOCK_IN §v2 cut (a)) | JAX foundation + differentiability. New modules: `jax_core` (pure JAX math primitives — tangent-flow forward/inverse, Banach analytical state, lookup-table squared distance, inversion residual), `jax_ops` (consumer surface: `*_diff` entry points returning JAX arrays, exact closed-form `forward_sweep_invert_diff` for tangent-flow, `tangent_flow_forward_jacobian`, `banach_state_diff`), `jax_pytree` (CanonicalState as JAX PyTree). Float64 enabled. v0/v1 surfaces unchanged; all v0/v1 fixtures pass unchanged. JAX added as hard dep; Windows CPU + WSL GPU both work (Windows CPU is the dev-time canonical environment). Cuts (b)–(e) remain: Bayesian inversion, N-mode, I1–I4 intents, non-Markovian Caputo flow. |
+| 2026-05-16 | Python v2.1.0 build (BLOCK_IN §v2 cut (b)) | Bayesian inversion via Laplace approximation. New `Posterior` dataclass + `forward_sweep_invert_posterior` / `_wrapped` (separate function rather than `posterior=True` kwarg — cleaner return-type contract; sanctioned at session time). Tangent-flow fast path: MAP exact, covariance = `noise_variance * inv(J^T J)`, finite log-evidence. Lookup-table path: weighted-moment fit over top-k lowest-residual candidates. New `jax_core.laplace_covariance_from_jacobian` / `laplace_covariance_from_hessian` / `laplace_log_evidence` primitives. All prior tests still green plus 14 new bayesian-inversion tests. Cuts (c)–(e) remain. |

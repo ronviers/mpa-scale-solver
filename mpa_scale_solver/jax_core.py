@@ -232,3 +232,83 @@ def tangent_flow_inversion_residual(
     d_chit = predicted_chit - target_substrate_chit
     d_gamma = predicted_gamma - target_substrate_gamma
     return d_chit * d_chit + d_gamma * d_gamma
+
+
+# ---------------------------------------------------------------------------
+# Laplace-approximation posterior (v2.1 — BLOCK_IN cut b)
+# ---------------------------------------------------------------------------
+
+def laplace_covariance_from_jacobian(
+    jacobian: jnp.ndarray,
+    noise_variance: jnp.ndarray,
+) -> jnp.ndarray:
+    """Posterior covariance under a Gaussian likelihood with isotropic noise.
+
+    For a forward map `y = f(c)` with Gaussian observation noise
+    `y_obs = y + ε`, `ε ~ N(0, sigma^2 I)`, the Laplace-approximation
+    posterior covariance over `c` evaluated at the MAP point is
+
+        Σ_post = sigma^2 (J^T J)^-1
+
+    where `J = ∂f/∂c` at the MAP. This holds exactly when the residual
+    at MAP is zero (the closed-form tangent-flow inverse case) and is
+    the leading-order approximation otherwise. The full Hessian
+    `H = J^T J - residual ⊗ ∂J/∂c` is computed via `jax.hessian` in
+    callers that need the higher-order correction.
+
+    Singular `J^T J` (rank-deficient Jacobian — e.g. a degenerate
+    parameter direction) raises `numpy.linalg.LinAlgError` through
+    `jnp.linalg.inv`. The Banach identity field at `tau_obs = 1` is the
+    documented well-conditioned case.
+    """
+    jtj = jacobian.T @ jacobian
+    return noise_variance * jnp.linalg.inv(jtj)
+
+
+def laplace_covariance_from_hessian(
+    hessian: jnp.ndarray,
+    noise_variance: jnp.ndarray,
+) -> jnp.ndarray:
+    """Posterior covariance from the full Hessian of the residual.
+
+    For the squared-residual cost `R(c) = ||y - f(c)||^2`, the
+    negative-log-likelihood under isotropic Gaussian noise is
+    `(1/2sigma^2) R(c)`. Its Hessian at MAP is `(1/sigma^2) * H_R(MAP)`
+    where `H_R` is the residual Hessian. The Laplace posterior
+    covariance is
+
+        Σ_post = sigma^2 * H_R(MAP)^-1
+
+    Use this form when the residual at MAP is non-zero (lookup-table
+    inversion, learned-field inversion); use
+    `laplace_covariance_from_jacobian` for the zero-residual fast path.
+    """
+    return noise_variance * jnp.linalg.inv(hessian)
+
+
+def laplace_log_evidence(
+    residual_at_map: jnp.ndarray,
+    hessian: jnp.ndarray,
+    noise_variance: jnp.ndarray,
+    n_obs: int,
+) -> jnp.ndarray:
+    """Log-marginal-likelihood under the Laplace approximation.
+
+        log p(y) ≈ -0.5 * R(MAP) / sigma^2
+                   - 0.5 * n_obs * log(2*pi*sigma^2)
+                   + 0.5 * dim_c * log(2*pi)
+                   - 0.5 * log det((1/sigma^2) * H_R(MAP))
+
+    For Bayesian model comparison between competing driver profiles or
+    competing intent maps; downstream consumers in v3's active learning
+    will weight candidate measurements by expected information gain
+    derived from this surface.
+    """
+    dim_c = hessian.shape[0]
+    log_det_precision = jnp.linalg.slogdet(hessian / noise_variance)[1]
+    return (
+        -0.5 * residual_at_map / noise_variance
+        - 0.5 * n_obs * jnp.log(2.0 * jnp.pi * noise_variance)
+        + 0.5 * dim_c * jnp.log(2.0 * jnp.pi)
+        - 0.5 * log_det_precision
+    )

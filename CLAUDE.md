@@ -26,16 +26,26 @@
 - **v2.0 JAX surface (parallel to v0/v1; opt-in):**
   - `jax_core.py` — pure JAX math primitives, float64-enabled,
     JIT-able, differentiable. Mirrors the v0/v1 closed forms in
-    `jax.numpy`. Is the math source the v6 native port reads.
+    `jax.numpy`. Is the math source the v6 native port reads. v2.1
+    extends with Laplace-approximation primitives
+    (`laplace_covariance_from_jacobian` / `_from_hessian` /
+    `laplace_log_evidence`).
   - `jax_ops.py` — consumer surface returning JAX arrays:
     `tangent_flow_substrate_diff`, `flow_diff`,
     `tangent_flow_forward_jacobian`, `banach_state_diff`,
     `forward_sweep_invert_diff` (exact closed-form inverse on
     tangent-flow). Composes cleanly under `jax.grad` /
-    `jax.jacobian` / `jax.hessian`.
+    `jax.jacobian` / `jax.hessian`. v2.1 adds `tangent_flow_posterior`
+    + `lookup_table_posterior` (Laplace approximation).
   - `jax_pytree.py` — `CanonicalState` registered as a JAX PyTree
     (leaves: `(chit, gamma_AB)`; aux: `k_frust`). Idempotent
     side-effect on import.
+- **v2.1 Bayesian inversion surface:** `Posterior` dataclass in
+  `types.py` + `forward_sweep_invert_posterior` /
+  `forward_sweep_invert_posterior_wrapped` in `operations.py`.
+  Separate functions, not a kwarg on the existing wrapped variant
+  (cleaner return-type contract). The wrapped variant follows the
+  established `*_wrapped` validation + provenance pattern.
 
 Named family of operations, parallel to `mpa-solver`. Sibling, not nested.
 
@@ -161,10 +171,14 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
   (math primitives), `jax_ops` (consumer surface), `jax_pytree`
   (CanonicalState as JAX PyTree). v0/v1 surfaces unchanged. JAX
   becomes a hard dep. (Shipped 2026-05-16.)
-- **v2.1–v2.4**: remaining v2 slices per BLOCK_IN cuts (b)–(e):
-  Bayesian inversion, N-mode generalization, I1–I4 intents,
-  non-Markovian Caputo. Each its own session; each builds on the v2.0
-  jax_core / jax_ops foundation.
+- **v2.1**: Bayesian inversion via Laplace approximation. `Posterior`
+  dataclass + `forward_sweep_invert_posterior` / `_wrapped`. Tangent-
+  flow closed-form fast path; lookup-table weighted-moment fit.
+  (Shipped 2026-05-16.)
+- **v2.2–v2.4**: remaining v2 slices per BLOCK_IN cuts (c)–(e):
+  N-mode generalization, I1–I4 intents, non-Markovian Caputo. Each
+  its own session; each builds on the v2.0 jax_core / jax_ops
+  foundation.
 - **v3**: cross-substrate operations, active learning, MCP server
   interface, learned translation-field form (LearnedField uses
   jax_core / jax_ops directly).

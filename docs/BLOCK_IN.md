@@ -2,8 +2,9 @@
 
 Self-evolving trajectory handoff. v1.0.0 shipped 2026-05-16 (consumed
 end-to-end by mpa-conform v0.2). v2.0.0 shipped 2026-05-16 (BLOCK_IN
-§v2 cut (a) — JAX foundation + differentiability). What remains:
-v2.1–v2.4 (cuts b–e) → v3 → v4 → v5 → v6.
+§v2 cut (a) — JAX foundation + differentiability). v2.1.0 shipped
+2026-05-16 (cut (b) — Bayesian inversion via Laplace approximation).
+What remains: v2.2–v2.4 (cuts c–e) → v3 → v4 → v5 → v6.
 
 This document is the single brief that carries from one session to the
 next. It is **not** a roadmap — sequencing lives in
@@ -44,17 +45,17 @@ always — refine in place).
 |---|---|---|
 | v1 | Continuous flow + Banach + sidecar + per-call validation | — (shipped) |
 | v2.0 | JAX foundation + differentiability (BLOCK_IN cut a) | v1 (shipped) |
-| **v2.1** | Bayesian inversion (Laplace around MAP) (cut b) | v2.0 |
+| v2.1 | Bayesian inversion (Laplace around MAP) (cut b) | v2.0 (shipped) |
 | **v2.2** | N-mode generalization (cut c) | v2.0 |
 | **v2.3** | Full I1–I4 intents + composition algebra (cut d) | v2.0 |
 | **v2.4** | Non-Markovian Caputo flow (β_mem < 1) via Prony (cut e) | v2.0 |
-| **v3** | Cross-substrate operations + active learning + MCP server + learned translation-field form | v2.* |
+| **v3** | Cross-substrate operations + active learning + MCP server + learned translation-field form | v2.* (active learning prefers v2.1's posteriors) |
 | **v4** | Streaming / online operation + symbolic query interface + notebook ergonomics | v3 (or v2.* if v3 deferred) |
 | **v5** | Continuous Banach self-test cadence + sensitivity backprop + gradient-based inversion replacing grid where invertible | v2.0 (v3/v4 optional) |
 | **v6** | One-shot native port (Rust or C++). Zero new features. Per-seed reproducibility against the v5 Python. | v5 |
 
 Sequencing is the user's call per ROADMAP. The dependency column is
-the *minimum* — v5 can ship as soon as v2.0 lands if v2.1–v2.4 and
+the *minimum* — v5 can ship as soon as v2.0 lands if v2.2–v2.4 and
 v3/v4 are deferred (sensitivity_backprop / gradient-based inversion
 only need the JAX foundation, not the higher v2.x slices).
 
@@ -102,12 +103,12 @@ follow-on session, not part of the scale-solver release.
 
 ---
 
-## §v2.1–v2.4 — remaining v2 cuts (Bayesian, N-mode, I1–I4, Caputo)
+## §v2.2–v2.4 — remaining v2 cuts (N-mode, I1–I4, Caputo)
 
-v2.0 (BLOCK_IN cut a) shipped the JAX foundation. Cuts (b)–(e) remain
-as independent v2.x slices, each one its own session. They build on
-the v2.0 surface (`jax_core` / `jax_ops` / `jax_pytree`) rather than
-reinventing it.
+v2.0 (BLOCK_IN cut a) shipped the JAX foundation. v2.1 (cut b)
+shipped Bayesian inversion via Laplace approximation. Cuts (c)–(e)
+remain as independent v2.x slices, each one its own session. They
+build on the v2.0/v2.1 surface rather than reinventing it.
 
 **Foundation that landed at v2.0 (do not re-do):**
 
@@ -115,14 +116,17 @@ reinventing it.
   enabled, JIT-able and differentiable: `tangent_flow_substrate`,
   `tangent_flow_canonical_inverse`, `tangent_flow_canonical`,
   `banach_state`, `lookup_squared_distance`,
-  `tangent_flow_inversion_residual`. This is the single math source
-  the v6 native port reads as reference.
+  `tangent_flow_inversion_residual`,
+  `laplace_covariance_from_jacobian`, `laplace_covariance_from_hessian`,
+  `laplace_log_evidence`. This is the single math source the v6 native
+  port reads as reference.
 - `mpa_scale_solver.jax_ops` — consumer surface returning JAX arrays:
   `tangent_flow_substrate_diff`, `flow_diff`,
   `tangent_flow_forward_jacobian`, `banach_state_diff`,
   `forward_sweep_invert_diff` (exact closed-form inverse on
-  tangent-flow). Composition under `jax.grad` / `jax.jacobian` /
-  `jax.hessian` works directly on CanonicalState-typed callbacks.
+  tangent-flow), `tangent_flow_posterior`, `lookup_table_posterior`.
+  Composition under `jax.grad` / `jax.jacobian` / `jax.hessian` works
+  directly on CanonicalState-typed callbacks.
 - `mpa_scale_solver.jax_pytree` — CanonicalState as a JAX PyTree
   (leaves: `(chit, gamma_AB)`; aux: `k_frust`). Registered on
   import; idempotent.
@@ -130,39 +134,16 @@ reinventing it.
   byte-identity contract preserved.
 - JAX is now a hard dep (`jax>=0.4`, `jaxlib>=0.4`).
 
-### §v2.1 — Bayesian inversion (cut b)
+**Foundation that landed at v2.1 (do not re-do):**
 
-**Goal.** `forward_sweep_invert_wrapped` gains an optional
-`posterior=True` kwarg that returns a distribution over canonical
-states. Laplace approximation around MAP for v2.1; full MCMC deferred
-to v3 active-learning. Multi-modal posteriors (ambiguity regions)
-first-class outputs.
-
-**Capabilities to land.**
-
-- New `Posterior` dataclass in `types.py` (mean = MAP, covariance =
-  inverse-Hessian-at-MAP, optional `modes: tuple[CanonicalState, ...]`
-  for ambiguity flagging).
-- `forward_sweep_invert_wrapped(..., posterior=True)` returns
-  `OperationOutput[Posterior]` instead of `OperationOutput[CanonicalState]`.
-  Hessian computed via `jax.hessian` composed against
-  `jax_core.tangent_flow_inversion_residual`.
-- For lookup_table fields the brute-force grid stays; posterior
-  approximated from the residual-field samples (Gaussian fit around
-  the argmin candidate). The residual field is already returned by
-  `forward_sweep_invert(..., return_residual_field=True)`.
-
-**Acceptance.**
-
-- v0 + v1 + v2.0 fixtures pass unchanged.
-- New: `test_bayesian_inversion.py` — synthetic substrate observation
-  with known posterior → recovered posterior matches within KL bound.
-- README + CLAUDE.md updated; this §v2.1 deleted from this block-in.
-- Tagged `v2.1.0`.
-
-**Open / watch.** The posterior shape rides into mpa-conform's
-`fit_provenance.inversion_validation`. v2.1 ships the dataclass; the
-conform-side rewire is a separate follow-on (Cross-cutting discipline).
+- `Posterior` dataclass in `types.py` — mean (CanonicalState),
+  covariance (2x2 tuple), noise_variance, log_evidence, modes, notes.
+- `operations.forward_sweep_invert_posterior` /
+  `forward_sweep_invert_posterior_wrapped` — Bayesian inversion.
+  Tangent-flow: closed-form fast path. Lookup-table: weighted-moment
+  fit over top-k candidates. Separate function rather than
+  `posterior=True` kwarg on the existing wrapped variant — cleaner
+  return-type contract.
 
 ### §v2.2 — N-mode generalization (cut c)
 
@@ -279,7 +260,9 @@ alongside lookup_table and tangent_flow.
   candidate operating points where the driver profile is weak
   (high-uncertainty regions in canonical space, gamut edges with low
   classification confidence). Curator operators consume these when
-  planning library expansions. Depends on v2's posterior shapes.
+  planning library expansions. Builds on v2.1's `Posterior` (uses
+  log-evidence + covariance trace as the per-point uncertainty
+  surface).
 - **MCP server** — the seven operations exposed as MCP tools.
   Stateless, JSON I/O. Read-only over driver profiles (no write
   surface). Tested against the MCP reference client.
@@ -301,8 +284,9 @@ alongside lookup_table and tangent_flow.
   them.
 - Tagged `v3.0.0`.
 
-**Dependencies.** v2 shipped. Active learning needs v2's posterior
-shapes. MCP server needs no upstream — schedule freely within v3.
+**Dependencies.** v2.0 shipped (the minimum); active learning needs
+v2.1's `Posterior`. MCP server needs no upstream — schedule freely
+within v3.
 
 **Open / watch.**
 
