@@ -1,22 +1,25 @@
-"""mpa-scale-solver — MPA scale-management kernel (Python v1.0.0).
+"""mpa-scale-solver — MPA scale-management kernel.
 
-Per the v1 build handoff at
-H:/mpa-conform/docs/mpa-scale-solver-v1-handoff.md:
-
-- This Python is the v0/v1 SHIPPING artifact; native port is v6.
+- This Python is the v0/v1/v2 SHIPPING artifact; native port is v6.
 - Forward-only architecture (mpa-auditor §Q13).
 - Two translation-field shapes: `lookup_table` (v0) and `tangent_flow`
   (v1, RFC-S Appendix B item 1, Banach canonical leading-order).
-- Five-bucket regime classifier (handoff §C.4 / gfdr_model.js).
+- Five-bucket regime classifier (gfdr_model.js parity).
 - Continuous-form flow `C^nu = exp(nu * ln C)` in Markovian scope.
 - Banach substrate calibration reference + analytical `state_at(nu)`.
 - Inverse-lookup-table sidecar dispatch (curator-produced in mpa-conform).
 - Per-call self-validation + provenance trail on the wrapped variants.
+- v2 (cut (a)): JAX foundation under `jax_core` / `jax_ops` — pure
+  differentiable forward maps for the tangent-flow surface, Banach
+  analytical state, gradient-based inversion via BFGS, and
+  `CanonicalState` registered as a JAX PyTree. The v0/v1 unwrapped
+  signatures keep their `math.*` / numpy implementations unchanged
+  (fixture byte-identity contract); the JAX surface is parallel and
+  opt-in.
 
-The seven operations of handoff §A.4 are unchanged in surface; v1 adds
-their `*_wrapped` variants for consumers that want validation +
-provenance riding on `OperationOutput[T]`. Observable extraction lives
-in mpa-solver, bundle orchestration in mpa-conform, display in mpa-auditor.
+The seven operations are unchanged in surface; v1 added their
+`*_wrapped` variants. Observable extraction lives in mpa-solver, bundle
+orchestration in mpa-conform, display in mpa-auditor.
 """
 
 from ._version import __version__
@@ -77,6 +80,12 @@ from .gfdr_model import (
     interp_locus,
     locus_residual,
 )
+
+# v2 JAX surface (BLOCK_IN §v2 cut (a) — JAX foundation + differentiability).
+# Imported as modules so consumers can pick the surface they need; the
+# `jax_pytree` import has the side effect of registering CanonicalState
+# as a JAX PyTree (idempotent).
+from . import jax_core, jax_ops, jax_pytree  # noqa: F401
 
 
 __all__ = [

@@ -31,15 +31,51 @@ alongside the value (handoff §A.2 / §C.5 / §C.6). v0 sigs are unchanged;
 v1 consumers that want validation + provenance call the wrapped
 variants.
 
+## v2 differentiable surface
+
+v2.0 adds a JAX-backed differentiable surface alongside the v0/v1
+operations (which keep their `math.*` / numpy implementations and
+fixture byte-identity). See `mpa_scale_solver.jax_core` for the pure
+math primitives and `mpa_scale_solver.jax_ops` for the consumer surface:
+
+- `tangent_flow_substrate_diff(canonical, field, tau_obs)` — JAX-array
+  forward map. Differentiable in canonical coordinates and field
+  parameters.
+- `flow_diff(canonical_initial, nu, field)` — continuous-form flow on
+  tangent-flow fields. Banach exponential and generic tangent-flow
+  branches mirror `flow.flow()` dispatch.
+- `tangent_flow_forward_jacobian(canonical, field, tau_obs)` — 2x2
+  Jacobian via `jax.jacfwd`; the substrate sensitivity surface v2.1's
+  Laplace approximation and v5's `sensitivity_backprop` will compose
+  against.
+- `forward_sweep_invert_diff(target, field, tau_obs)` — exact
+  closed-form inverse of the tangent-flow forward map (monotonic and
+  analytically invertible at `tau_obs > 0`); routes through
+  `jax_core.tangent_flow_canonical_inverse` so gradients flow.
+- `banach_state_diff(substrate, nu)` — differentiable Banach
+  analytical canonical state.
+
+`CanonicalState` is registered as a JAX PyTree (leaves: `(chit,
+gamma_AB)`; aux: `k_frust`) so `jax.grad` / `jax.jacobian` /
+`jax.hessian` work directly on CanonicalState-typed callbacks. Float64
+is enabled at `jax_core` import.
+
+The v0/v1 `apply_translation`, `flow`, `forward_sweep_invert`, and
+`tau_obs_sweep` (and their `*_wrapped` variants) are unchanged. The
+JAX surface is parallel and opt-in — consumers that don't need
+gradients call the v0/v1 surface as before.
+
 ## Install
 
 ```
 pip install -e .
 ```
 
-Python 3.10+. Hard dep is `numpy`. Tests additionally need `pytest` and
-optionally `matplotlib` (used by the camera test for the visual plot;
-the test still passes without it).
+Python 3.10+. Hard deps are `numpy`, `jax`, `jaxlib` (CPU JAX is
+sufficient for correctness; GPU is optional, available only on Linux/
+WSL — see CLAUDE.md). Tests additionally need `pytest` and optionally
+`matplotlib` (used by the camera test for the visual plot; the test
+still passes without it).
 
 ## A minimal example
 
@@ -124,3 +160,4 @@ per-frame EXR channels mpa-conform assembles using outputs from this repo.
 |---|---|---|
 | 2026-05-15 | Python v0.1.0 build | Seven operations shipped; gfdr_model.js ported (5-bucket); camera test passes max\|residual\| = 0.012 vs tolerance 0.05; all three seed-corpus profiles pass round-trip closure. |
 | 2026-05-16 | Python v1.0.0 build | Tangent-flow translation field + continuous `flow()` + Banach calibration substrate + inverse-lookup-table sidecar dispatch + per-call self-validation + full provenance trail. Seven wrapped variants (`*_wrapped`) returning `OperationOutput[T]`. Banach camera test passes max\|residual\| < 0.001. All v0 fixtures pass unchanged. |
+| 2026-05-16 | Python v2.0.0 build (BLOCK_IN §v2 cut (a)) | JAX foundation + differentiability. New modules: `jax_core` (pure JAX math primitives — tangent-flow forward/inverse, Banach analytical state, lookup-table squared distance, inversion residual), `jax_ops` (consumer surface: `*_diff` entry points returning JAX arrays, exact closed-form `forward_sweep_invert_diff` for tangent-flow, `tangent_flow_forward_jacobian`, `banach_state_diff`), `jax_pytree` (CanonicalState as JAX PyTree). Float64 enabled. v0/v1 surfaces unchanged; all v0/v1 fixtures pass unchanged. JAX added as hard dep; Windows CPU + WSL GPU both work (Windows CPU is the dev-time canonical environment). Cuts (b)–(e) remain: Bayesian inversion, N-mode, I1–I4 intents, non-Markovian Caputo flow. |

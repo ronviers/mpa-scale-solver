@@ -23,6 +23,19 @@
 - The synthetic substrate signal generator + per-frame
   `window_average_at_tau_obs` used only by the legacy v0 camera test.
 - Schema dataclasses mirroring `mpa-atlas/schema/driver-profile.v2.0.json`.
+- **v2.0 JAX surface (parallel to v0/v1; opt-in):**
+  - `jax_core.py` — pure JAX math primitives, float64-enabled,
+    JIT-able, differentiable. Mirrors the v0/v1 closed forms in
+    `jax.numpy`. Is the math source the v6 native port reads.
+  - `jax_ops.py` — consumer surface returning JAX arrays:
+    `tangent_flow_substrate_diff`, `flow_diff`,
+    `tangent_flow_forward_jacobian`, `banach_state_diff`,
+    `forward_sweep_invert_diff` (exact closed-form inverse on
+    tangent-flow). Composes cleanly under `jax.grad` /
+    `jax.jacobian` / `jax.hessian`.
+  - `jax_pytree.py` — `CanonicalState` registered as a JAX PyTree
+    (leaves: `(chit, gamma_AB)`; aux: `k_frust`). Idempotent
+    side-effect on import.
 
 Named family of operations, parallel to `mpa-solver`. Sibling, not nested.
 
@@ -53,8 +66,12 @@ alpha_s here, it's only a few lines." No. `fit_invariants` lives in
   leading-order rule (RFC-S Appendix B item 1).
 - **`forward_sweep_invert` is brute-force grid search**. v1 adds the
   opt-in `sidecar=` kwarg on the wrapped variant for table-first
-  dispatch; the v0 sig is unchanged. Adaptive refinement, ambiguity-set
-  reporting, and gradient-based / Bayesian inversion are v2.
+  dispatch; the v0 sig is unchanged. v2.0 adds
+  `jax_ops.forward_sweep_invert_diff` — exact closed-form analytical
+  inverse for tangent-flow fields (differentiable through the target),
+  routed through `jax_core.tangent_flow_canonical_inverse`. Bayesian
+  inversion is v2.1; generic gradient-based (BFGS / L-BFGS / Newton)
+  for non-tangent-flow differentiable forward maps is v5.
 - **`flow()` is continuous in Markovian scope only** (`beta_mem = 1`).
   Non-Markovian Caputo (`beta_mem < 1`) is v2's fractional-RG
   generalization. v1 supports tangent-flow fields directly; lookup-table
@@ -67,8 +84,11 @@ alpha_s here, it's only a few lines." No. `fit_invariants` lives in
   force grids partition canonical space into Voronoi cells; recovery is
   exact only when the candidate grid includes the rule canonical.
   Round-trip closure on seed-corpus profiles is checked at the
-  substrate-cell level. Sub-grid-resolution recovery is v2 (JAX +
-  gradient-based optimization).
+  substrate-cell level. For tangent-flow fields v2.0 provides
+  sub-grid-resolution recovery via the closed-form
+  `jax_ops.forward_sweep_invert_diff` (exact at float64 precision); for
+  lookup-table fields the grid remains the binding constraint until v5
+  lands a smooth-surrogate dispatch.
 - **τ_obs is an observer-fact, not a substrate-unknown** (mpa-auditor
   §Q13). It is declared and passed in; the operations never infer it
   from the data.
@@ -83,11 +103,11 @@ lock behavior; changing the math intentionally requires bumping
 reproducibility (parallel-friendly) is the discipline the v6 native port
 will match.
 
-## Back-compat (v0 → v1)
+## Back-compat (v0 → v1 → v2.0)
 
-- **v0 sigs unchanged**. Every v0 fixture passes unchanged in v1.
-  `TranslationField` is still the lookup_table dataclass; `LookupTableField`
-  is an alias for the handoff-spelled name.
+- **v0 sigs unchanged**. Every v0 fixture passes unchanged in v1 and
+  v2.0. `TranslationField` is still the lookup_table dataclass;
+  `LookupTableField` is an alias for the handoff-spelled name.
 - **`apply_translation` accepts `Union[TranslationField, TangentFlowField]`**
   (via `AnyTranslationField`). Old code passing a `TranslationField`
   works unmodified.
@@ -96,6 +116,11 @@ will match.
   Consumers that don't care call the v0 op as before.
 - **`sidecar=` is opt-in everywhere**. Not passing one falls through to
   the v0 brute-force path.
+- **v2.0 JAX surface is parallel and opt-in**. `jax_core` / `jax_ops`
+  add new entry points; the existing `operations.*` / `flow.*` /
+  `banach.*` paths still use Python `math.*` for byte-identity with the
+  fixture suite. Consumers that don't need gradients call the v0/v1
+  surface as before.
 - **The thread-local `get_last_call_metadata()` pattern from handoff
   §A.2 alternative is NOT implemented** (it would conflict with the
   stateless commitment in §A.3). Wrapped variants are the single
@@ -117,7 +142,10 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
 
 - **Thin-RFC discipline** (mpa-atlas/CLAUDE.md): we do not thicken the
   schema or the operation set. The seven operations + `flow` are the
-  entire v1 surface; no eighth without a foundational-questions entry.
+  entire surface; no eighth without a foundational-questions entry.
+  v2.0's `*_diff` variants are not eighth operations — they are
+  differentiable shapes of the existing seven, returning JAX arrays
+  rather than dataclasses, and dispatched on consumer opt-in.
 - **No declared virtues in user-facing copy** (memory): README and CLI
   output describe behavior, not virtue.
 - **Document size by function, not percentage**: this file is short
@@ -125,48 +153,68 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
 
 ## Trajectory
 
-- **v1 (this version)**: continuous `flow()` + tangent-flow translation
-  field + Banach calibration substrate + inverse-lookup-table sidecar
-  dispatch + per-call self-validation + full provenance trail. Seven
-  wrapped variants. Pure numpy + Python.
-- **v2**: JAX adoption, full differentiability, Bayesian inversion
-  primitives, N-mode generalization, full I1–I5 intent operations,
-  non-Markovian Caputo (`beta_mem < 1`) fractional-RG generalization.
+- **v1**: continuous `flow()` + tangent-flow translation field + Banach
+  calibration substrate + inverse-lookup-table sidecar dispatch +
+  per-call self-validation + full provenance trail. Seven wrapped
+  variants. Pure numpy + Python. (Shipped 2026-05-16.)
+- **v2.0**: JAX foundation + differentiability. New modules: `jax_core`
+  (math primitives), `jax_ops` (consumer surface), `jax_pytree`
+  (CanonicalState as JAX PyTree). v0/v1 surfaces unchanged. JAX
+  becomes a hard dep. (Shipped 2026-05-16.)
+- **v2.1–v2.4**: remaining v2 slices per BLOCK_IN cuts (b)–(e):
+  Bayesian inversion, N-mode generalization, I1–I4 intents,
+  non-Markovian Caputo. Each its own session; each builds on the v2.0
+  jax_core / jax_ops foundation.
 - **v3**: cross-substrate operations, active learning, MCP server
-  interface, learned translation-field form.
+  interface, learned translation-field form (LearnedField uses
+  jax_core / jax_ops directly).
 - **v4**: streaming / online operation, symbolic query interface,
   Mathematica-style exploration.
-- **v5**: continuous self-test cadence, sensitivity backprop, gradient-
-  based inversion replacing grid search where invertible.
+- **v5**: continuous self-test cadence, sensitivity backprop (composes
+  jax_ops Jacobians into the full trajectory chain rule), gradient-
+  based inversion replacing grid search where invertible (jax_ops
+  already provides the tangent-flow closed-form; v5 generalizes to
+  learned / lookup-table-smooth-surrogate cases).
 - **v6**: one-shot native port (Rust or C++; language picked at session
-  time). Matches the v5 Python under per-seed reproducibility. Zero new
-  features.
+  time). `jax_core.py` is the math source the port reads; the v0/v1
+  operations are wrapper-shape only. Matches the v5 Python under
+  per-seed reproducibility. Zero new features.
 
 Each is its own session, sequenced by the user via
 `mpa-conform/docs/ROADMAP.md`.
 
 ## Acceptance for the v1 build session (handoff §E)
 
-All twelve items met as of 2026-05-16:
+All twelve items met as of 2026-05-16. (Detail moved to README session
+log; the v1 acceptance contract is locked.)
 
-1. v0 fixture regression passes unchanged.
-2. Banach camera test passes with `max |residual| < 0.001` per axis.
-3. v0 camera test (legacy `aging_log`) still passes — back-compat
-   intact.
-4. Seed-corpus integration passes (three real profiles, unchanged).
-5. Sidecar dispatch test passes (with + without; provenance correctly
-   records dispatch path).
-6. Validation test passes (each flag fires when triggered).
-7. Provenance test passes.
-8. `pip install -e .` works in a fresh venv.
-9. README, CLAUDE.md, docs/* updated; CONTINUOUS_FLOW.md, TANGENT_FLOW.md,
-   SIDECAR_FORMAT.md, BANACH_SUBSTRATE.md added.
-10. Sdist tarball built.
-11. Tagged `v1.0.0` and pushed to `github.com/ronviers/mpa-scale-solver`.
-12. Session log row appended to README.
+## Acceptance for the v2.0 build session
+
+Five items met as of 2026-05-16:
+
+1. v0 + v1 fixture regression passes unchanged (125 prior tests green
+   plus 32 new differentiability tests).
+2. JAX 0.10.0 installed and active on Windows CPU; float64 enabled
+   at `jax_core` import.
+3. New `mpa_scale_solver.jax_core` / `jax_ops` / `jax_pytree` modules
+   exposed; CanonicalState round-trips through `jax.tree_util` and
+   `jax.grad` works directly on CanonicalState-typed callbacks.
+4. Differentiability tests pass: forward map matches v1 closed form
+   at abs=1e-12, autograd matches finite-difference at rtol=1e-6 /
+   atol=1e-9, JIT compiles cleanly, analytical inverse exact at
+   abs=1e-12 over a sweep of tau_obs values.
+5. pyproject bumped to 2.0.0 with JAX as a hard dep; README +
+   CLAUDE.md + BLOCK_IN.md updated.
 
 ## Session handoff
 
-This v1 session is the second build on the v0→v6 trajectory. Next
-sessions per the trajectory list above; each is its own handoff in
-`mpa-conform/docs/`.
+This v2.0 session is the third build on the v0→v6 trajectory. The
+v2.1 → v6 trajectory is governed by the **self-evolving block-in
+handoff** at [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md). Each session that
+lands a version deletes its own §vN section from that doc and refines
+the remaining sections in place. Historical "what shipped" stays in
+this repo's `README.md` § Session Log.
+
+When opening a scale-solver session, read [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md)
+§vN for the version being built. Read [`docs/NORTH_STAR.md`](docs/NORTH_STAR.md)
+for the destination context.

@@ -229,7 +229,7 @@ class TestBanachWrappedOps:
         )
         assert out.provenance.operation == "apply_translation"
         assert out.provenance.dispatch_path == DispatchPath.DIRECT_COMPUTE
-        assert out.provenance.solver_version.startswith("1.")
+        assert out.provenance.solver_version.startswith("2.")
         assert out.validation.asymptotic_closure_compliant is True
 
     def test_tau_obs_sweep_wrapped_validates_k_frust(self):

@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mpa-scale-solver"
-version = "1.0.0"
-description = "MPA scale-management kernel: tau_obs projection, canonical-frame operations, continuous flow, Banach calibration."
+version = "2.0.0"
+description = "MPA scale-management kernel: tau_obs projection, canonical-frame operations, continuous flow, Banach calibration, JAX-differentiable surface."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "ronviers" }]
-keywords = ["mpa", "scale-management", "rg-flow", "tau_obs", "banach", "tangent-flow"]
+keywords = ["mpa", "scale-management", "rg-flow", "tau_obs", "banach", "tangent-flow", "jax", "differentiable"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",
@@ -21,6 +21,8 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.26",
+    "jax>=0.4",
+    "jaxlib>=0.4",
 ]
 
 [project.optional-dependencies]
