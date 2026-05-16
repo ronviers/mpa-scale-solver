@@ -33,6 +33,29 @@ from typing import Any, Generic, Literal, Optional, TypeVar, Union
 
 
 # ---------------------------------------------------------------------------
+# Internal: tiny HTML-table builder for `_repr_html_` (v4 notebook ergonomics)
+# ---------------------------------------------------------------------------
+
+def _html_table(title: str, rows: list[tuple[str, Any]]) -> str:
+    """Compact HTML table used by `_repr_html_` on the user-facing dataclasses.
+
+    Two columns: field name, value. Title bar above. No external CSS;
+    Jupyter inherits cell styles.
+    """
+    body = "".join(
+        f"<tr><td style='padding:1px 6px;color:#666'>{k}</td>"
+        f"<td style='padding:1px 6px'>{v}</td></tr>"
+        for k, v in rows
+    )
+    return (
+        f"<table style='border-collapse:collapse;font-family:monospace'>"
+        f"<thead><tr><th colspan='2' style='text-align:left;"
+        f"padding:1px 6px;border-bottom:1px solid #999'>{title}</th></tr>"
+        f"</thead><tbody>{body}</tbody></table>"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Runtime working states (§A.3)
 # ---------------------------------------------------------------------------
 
@@ -48,6 +71,15 @@ class CanonicalState:
     chit: float
     gamma_AB: float
     k_frust: bool = False
+
+    def _repr_html_(self) -> str:
+        from .gfdr_model import vertex_regime  # deferred (avoids import cycle)
+        return _html_table("CanonicalState", [
+            ("chit", f"{self.chit:.6g}"),
+            ("gamma_AB", f"{self.gamma_AB:.6g}"),
+            ("k_frust", str(self.k_frust)),
+            ("regime", vertex_regime(self.chit)),
+        ])
 
 
 @dataclass(frozen=True)
@@ -65,6 +97,16 @@ class SubstrateState:
     label: Optional[str] = None
     axes: dict[str, Any] = field(default_factory=dict)
     observables: dict[str, float] = field(default_factory=dict)
+
+    def _repr_html_(self) -> str:
+        ax = ", ".join(f"{k}={v}" for k, v in self.axes.items()) or "(empty)"
+        ob = ", ".join(f"{k}={v:.4g}" for k, v in self.observables.items()) or "(empty)"
+        return _html_table("SubstrateState", [
+            ("tau_obs", f"{self.tau_obs:.6g}"),
+            ("label", self.label if self.label is not None else "(none)"),
+            ("axes", ax),
+            ("observables", ob),
+        ])
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +169,13 @@ class TranslationField:
     rule: list[TranslationRule]
     description: Optional[str] = None
 
+    def _repr_html_(self) -> str:
+        return _html_table("TranslationField (lookup_table)", [
+            ("direction", self.direction),
+            ("rules", f"{len(self.rule)}"),
+            ("description", self.description or "(none)"),
+        ])
+
 
 # v1: handoff-spelled name. Same class, two names — keeps v0 constructors
 # working (`TranslationField(direction="forward", shape="lookup_table", ...)`)
@@ -168,8 +217,20 @@ class TangentFlowField:
     scaling: ScalingRule
     description: Optional[str] = None
 
+    def _repr_html_(self) -> str:
+        s = self.scaling
+        return _html_table("TangentFlowField", [
+            ("direction", self.direction),
+            ("origin label", self.rule_at_origin.operating_point.label),
+            ("delta_chit", f"{s.delta_chit:.4g}"),
+            ("delta_gamma", f"{s.delta_gamma:.4g}"),
+            ("tau_obs_ref", f"{s.tau_obs_ref:.4g}"),
+            ("refinement", str(s.refinement) if s.refinement else "(none)"),
+            ("description", self.description or "(none)"),
+        ])
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, repr=False)
 class LearnedField:
     """Learned translation field — small MLP forward map (v3 BLOCK_IN §v3).
 
@@ -205,6 +266,32 @@ class LearnedField:
     tau_obs_ref: float = 1.0
     description: Optional[str] = None
 
+    def __repr__(self) -> str:
+        # Hand-rolled to avoid dumping the full weight tuple — opaque
+        # in REPLs and inflates logs.
+        return (
+            f"LearnedField(shape='learned', "
+            f"architecture={list(self.architecture)}, "
+            f"activation={self.activation!r}, "
+            f"tau_obs_ref={self.tau_obs_ref}, "
+            f"origin={self.rule_at_origin.operating_point.label!r})"
+        )
+
+    def _repr_html_(self) -> str:
+        n_params = sum(
+            sum(len(row) for row in W) + len(b)
+            for W, b in self.weights
+        )
+        return _html_table("LearnedField", [
+            ("shape", "learned"),
+            ("architecture", " → ".join(str(n) for n in self.architecture)),
+            ("activation", self.activation),
+            ("tau_obs_ref", f"{self.tau_obs_ref:.4g}"),
+            ("origin label", self.rule_at_origin.operating_point.label),
+            ("parameter count", str(n_params)),
+            ("description", self.description or "(none)"),
+        ])
+
 
 # v1/v3: the union the operations accept. Per the handoff §A.4 the
 # seven-operation API surface still takes "a translation field" — three
@@ -231,6 +318,18 @@ class GamutSpec:
     tau_obs_range: Optional[tuple[float, float]] = None
     out_of_scope_residual_threshold: float = 0.05
 
+    def _repr_html_(self) -> str:
+        return _html_table("GamutSpec", [
+            ("chit_range", f"[{self.chit_range[0]:.4g}, {self.chit_range[1]:.4g}]"),
+            ("gamma_AB_range",
+             f"[{self.gamma_AB_range[0]:.4g}, {self.gamma_AB_range[1]:.4g}]"),
+            ("tau_obs_range",
+             f"[{self.tau_obs_range[0]:.4g}, {self.tau_obs_range[1]:.4g}]"
+             if self.tau_obs_range is not None else "(unbounded)"),
+            ("out_of_scope_residual_threshold",
+             f"{self.out_of_scope_residual_threshold:.4g}"),
+        ])
+
 
 RegimeLabel = Literal["deep_c", "c_near_s", "s_critical", "r_near_s", "deep_r"]
 DisplayBand = Literal["c", "s", "r"]
@@ -247,6 +346,12 @@ class RegimeReading:
 
     regime: RegimeLabel
     k_frust: bool = False
+
+    def _repr_html_(self) -> str:
+        return _html_table("RegimeReading", [
+            ("regime", self.regime),
+            ("k_frust", str(self.k_frust)),
+        ])
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +411,7 @@ class ValidationReport:
 T = TypeVar("T")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class OperationOutput(Generic[T]):
     """Wrapped operation result (handoff §A.2 / §C.5 / §C.6).
 
@@ -319,12 +424,40 @@ class OperationOutput(Generic[T]):
     validation: ValidationReport
     provenance: Provenance
 
+    def __repr__(self) -> str:
+        v = self.validation
+        ok = v.asymptotic_closure_compliant and v.k_frust_invariant
+        return (
+            f"OperationOutput(value={type(self.value).__name__}, "
+            f"validation.ok={ok}, "
+            f"operation={self.provenance.operation!r}, "
+            f"dispatch_path={self.provenance.dispatch_path.value!r})"
+        )
+
+    def _repr_html_(self) -> str:
+        v = self.validation
+        rtr = (
+            f"{v.round_trip_residual:.4g}"
+            if v.round_trip_residual is not None else "(n/a)"
+        )
+        return _html_table("OperationOutput", [
+            ("value type", type(self.value).__name__),
+            ("operation", self.provenance.operation),
+            ("dispatch_path", self.provenance.dispatch_path.value),
+            ("asymptotic_closure_compliant",
+             str(v.asymptotic_closure_compliant)),
+            ("k_frust_invariant", str(v.k_frust_invariant)),
+            ("round_trip_residual", rtr),
+            ("notes",
+             ("; ".join(v.notes) if v.notes else "(none)")),
+        ])
+
 
 # ---------------------------------------------------------------------------
 # v2.1: Laplace-approximation posterior over canonical states
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class Posterior:
     """Laplace-approximation posterior over canonical states (BLOCK_IN cut b).
 
@@ -360,6 +493,36 @@ class Posterior:
     log_evidence: Optional[float] = None
     modes: tuple[CanonicalState, ...] = ()
     notes: tuple[str, ...] = ()
+
+    def __repr__(self) -> str:
+        cov_trace = self.covariance[0][0] + self.covariance[1][1]
+        le = (
+            f"{self.log_evidence:.4g}"
+            if self.log_evidence is not None else "None"
+        )
+        return (
+            f"Posterior(mean=({self.mean.chit:.4g}, {self.mean.gamma_AB:.4g}), "
+            f"cov_trace={cov_trace:.4g}, noise_var={self.noise_variance:.4g}, "
+            f"log_evidence={le}, n_modes={len(self.modes)})"
+        )
+
+    def _repr_html_(self) -> str:
+        cov = self.covariance
+        le = (
+            f"{self.log_evidence:.4g}"
+            if self.log_evidence is not None else "(none)"
+        )
+        return _html_table("Posterior (Laplace)", [
+            ("MAP mean",
+             f"chit={self.mean.chit:.4g}, gamma_AB={self.mean.gamma_AB:.4g}"),
+            ("covariance",
+             f"[[{cov[0][0]:.4g}, {cov[0][1]:.4g}], "
+             f"[{cov[1][0]:.4g}, {cov[1][1]:.4g}]]"),
+            ("cov trace", f"{cov[0][0] + cov[1][1]:.4g}"),
+            ("noise_variance", f"{self.noise_variance:.4g}"),
+            ("log_evidence", le),
+            ("n_modes", str(len(self.modes))),
+        ])
 
 
 # ---------------------------------------------------------------------------

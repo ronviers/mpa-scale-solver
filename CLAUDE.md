@@ -90,6 +90,46 @@
   until then curators ship the learned-field block under the schema's
   `additionalProperties` allowance, parsed by
   `_parse_learned_field`.
+- **v4 streaming inversion:** `streaming.py` carries `InversionResult`
+  + `forward_sweep_invert_stream(observations, field, canonical_grid,
+  *, tau_obs=None, score_fn=None)` (generator yielding
+  `InversionResult` per consumed observation). State-local per frame;
+  `tau_obs=None` uses each `obs.tau_obs` (per-frame observer scale).
+  Thin source adapters: `from_iterable` (passthrough) and `from_stdin`
+  (JSON-per-line). WebSocket / polling deferred — any iterable fits
+  the same interface. Wrapped streaming variant not exposed —
+  consumers that want `OperationOutput` per frame call
+  `forward_sweep_invert_wrapped` in their own loop.
+- **v4 symbolic query DSL:** `symbolic_query.py` carries `query()` +
+  `QueryResult` + `QueryParseError`. Five patterns max (BLOCK_IN
+  §v4 cap): `regime at`, `gamut at`, `translate`, `invert`
+  (tangent_flow only — closed-form algebraic inverse), and
+  `tau where regime crosses` (closed-form for tangent_flow with
+  delta_chit ≠ 0; bisection over `tau_range` for lookup_table /
+  learned). Structural context (field, gamut, grid, tau_range) rides
+  as kwargs; the DSL parses intent and literal parameters only.
+  Mathematica-style: closed-form expression + numerical evaluation
+  where both exist. Read-only — no operation mutates the field.
+- **v4 notebook ergonomics:** `_repr_html_` methods on every
+  user-facing dataclass (CanonicalState, SubstrateState, GamutSpec,
+  RegimeReading, TranslationField, TangentFlowField, LearnedField,
+  Posterior, OperationOutput, MeasurementCandidate, InversionResult)
+  render compact HTML tables in Jupyter. `__repr__` overridden on
+  `Posterior`, `LearnedField`, `OperationOutput` to avoid dumping
+  nested tuples / weight matrices in REPL output. The default
+  dataclass `__repr__` is preserved everywhere else for back-compat.
+  A small `_html_table` helper at the top of `types.py` keeps the
+  HTML method bodies short.
+- **v4 default plot hooks:** `plotting.py` carries
+  `plot_trajectory(trajectory, ...)` (regime-banded canonical curve),
+  `plot_gamut(gamut, *, points=...)` (gamut envelope + overlay),
+  `plot_residual_field(residuals, canonical_grid, *, recovered=...)`,
+  and `plot_posterior(posterior, *, n_sigma=2.0)` (MAP + Laplace
+  ellipse). Each takes `backend="matplotlib"` (default) or
+  `"plotly"`. Both backends are lazily imported (`try: import
+  matplotlib`) — matplotlib stays in test-extras; plotly is fully
+  optional (no project dep). Animation / scrubber UIs deferred to
+  mpa-auditor per the suite block-in.
 
 Named family of operations, parallel to `mpa-solver`. Sibling, not nested.
 
@@ -238,8 +278,13 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
   per-intent RFC-S §5 metrics in `validate_driver_profile`. Seven-op
   API unchanged; cross-substrate ops live as compositions in their own
   module. (Shipped 2026-05-16; 286 tests green.)
-- **v4**: streaming / online operation, symbolic query interface,
-  Mathematica-style exploration.
+- **v4**: streaming inversion + symbolic query DSL + notebook
+  ergonomics (`_repr_html_` + selective `__repr__` overrides) +
+  default plot hooks (matplotlib + lazy plotly). New modules:
+  `streaming` (`InversionResult` + `forward_sweep_invert_stream` +
+  thin source adapters), `symbolic_query` (5-pattern DSL),
+  `plotting` (4 default plot helpers). Seven-op API unchanged.
+  (Shipped 2026-05-16; 338 tests green.)
 - **v5**: continuous self-test cadence, sensitivity backprop (composes
   jax_ops Jacobians into the full trajectory chain rule), gradient-
   based inversion replacing grid search where invertible (jax_ops
@@ -257,6 +302,31 @@ Each is its own session, sequenced by the user via
 
 All twelve items met as of 2026-05-16. (Detail moved to README session
 log; the v1 acceptance contract is locked.)
+
+## Acceptance for the v4 build session
+
+Four items met as of 2026-05-16:
+
+1. v0 + v1 + v2 + v3 fixtures pass unchanged (286 prior tests green
+   plus 52 new v4 tests: 14 streaming, 13 symbolic-query, 25
+   notebook-repr / plot helpers). 338 tests total green.
+2. Streaming surface (`mpa_scale_solver.streaming`): `InversionResult`
+   + `forward_sweep_invert_stream` generator + thin source adapters
+   (`from_iterable`, `from_stdin`). State-local per frame; lazy
+   generator; supports per-frame `tau_obs` via `tau_obs=None`.
+3. Symbolic-query DSL (`mpa_scale_solver.symbolic_query`): five
+   patterns, regex-parsed, closed-form expressions returned for
+   tangent_flow translate / invert / tau-crossing; bisection
+   fallback for non-tangent-flow tau-crossing via `tau_range` kwarg.
+4. Notebook ergonomics: `_repr_html_` on 11 user-facing dataclasses;
+   `__repr__` overridden on Posterior / LearnedField /
+   OperationOutput to suppress nested-tuple / weight-matrix dumps.
+   `plotting.py` ships four default plot helpers
+   (`plot_trajectory`, `plot_gamut`, `plot_residual_field`,
+   `plot_posterior`) with matplotlib (lazy) and plotly (optional).
+   README + CLAUDE.md updated; BLOCK_IN §v4 deleted; §v5 refined
+   with the streaming-side self-test cadence note (cadence k applies
+   per emitted frame).
 
 ## Acceptance for the v3 build session
 
@@ -327,12 +397,12 @@ Five items met as of 2026-05-16:
 
 ## Session handoff
 
-This v2.0 session is the third build on the v0→v6 trajectory. The
-v2.1 → v6 trajectory is governed by the **self-evolving block-in
+The v0→v6 trajectory is governed by the **self-evolving block-in
 handoff** at [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md). Each session that
 lands a version deletes its own §vN section from that doc and refines
 the remaining sections in place. Historical "what shipped" stays in
-this repo's `README.md` § Session Log.
+this repo's `README.md` § Session Log. As of 2026-05-16 the block-in
+carries v5 → v6 only (v1–v4 shipped).
 
 When opening a scale-solver session, read [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md)
 §vN for the version being built. Read [`docs/NORTH_STAR.md`](docs/NORTH_STAR.md)

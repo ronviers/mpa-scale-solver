@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mpa-scale-solver"
-version = "3.0.0"
-description = "MPA scale-management kernel: tau_obs projection, canonical-frame operations, continuous flow, Banach calibration, JAX-differentiable surface, cross-substrate ops, active learning, MCP server, learned translation fields."
+version = "4.0.0"
+description = "MPA scale-management kernel: tau_obs projection, canonical-frame operations, continuous flow, Banach calibration, JAX-differentiable surface, cross-substrate ops, active learning, MCP server, learned translation fields, streaming inversion, symbolic-query DSL, notebook ergonomics + plot hooks."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "ronviers" }]
-keywords = ["mpa", "scale-management", "rg-flow", "tau_obs", "banach", "tangent-flow", "jax", "differentiable", "mcp", "active-learning", "cross-substrate"]
+keywords = ["mpa", "scale-management", "rg-flow", "tau_obs", "banach", "tangent-flow", "jax", "differentiable", "mcp", "active-learning", "cross-substrate", "streaming", "symbolic-query", "notebook"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",

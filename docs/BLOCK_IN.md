@@ -1,16 +1,18 @@
-# mpa-scale-solver — v4→v6 block-in handoff
+# mpa-scale-solver — v5→v6 block-in handoff
 
-Self-evolving trajectory handoff. v1, v2, and v3 shipped 2026-05-16:
-v1.0.0 (continuous flow + Banach + sidecar), v2.0.0 (JAX foundation,
-cut a), v2.1.0 (Bayesian inversion via Laplace, cut b), v2.3.0 (full
-I1–I5 intents + composition, cut d), v2.4.0 (non-Markovian Caputo flow
-via Prony, cut e), v3.0.0 (cross-substrate ops + active learning + MCP
-server + LearnedField + per-intent RFC-S §5 metrics). Cut (c) "N-mode
-generalization" cancelled 2026-05-16 — premise overturned by framework
-cross-check; the 2-mode CanonicalState is the framework's universal
-canonical representation, not a 2-mode-as-N=2-special-case (see
-§v2.2-cancelled tombstone below).
-What remains: v4 → v5 → v6.
+Self-evolving trajectory handoff. v1–v4 shipped 2026-05-16: v1.0.0
+(continuous flow + Banach + sidecar), v2.0.0 (JAX foundation, cut a),
+v2.1.0 (Bayesian inversion via Laplace, cut b), v2.3.0 (full I1–I5
+intents + composition, cut d), v2.4.0 (non-Markovian Caputo flow via
+Prony, cut e), v3.0.0 (cross-substrate ops + active learning + MCP
+server + LearnedField + per-intent RFC-S §5 metrics), v4.0.0
+(streaming inversion + symbolic-query DSL + notebook ergonomics +
+default plot hooks). Cut (c) "N-mode generalization" cancelled
+2026-05-16 — premise overturned by framework cross-check; the 2-mode
+CanonicalState is the framework's universal canonical representation,
+not a 2-mode-as-N=2-special-case (see §v2.2-cancelled tombstone
+below).
+What remains: v5 → v6.
 
 This document is the single brief that carries from one session to the
 next. It is **not** a roadmap — sequencing lives in
@@ -49,16 +51,16 @@ always — refine in place).
 
 | Version | Theme | Depends on |
 |---|---|---|
-| v1–v3 | Foundation, JAX, Bayesian, intents, Caputo, cross-substrate, active learning, MCP, LearnedField — all shipped 2026-05-16 (see README §Session Log) | — (shipped) |
+| v1–v4 | Foundation, JAX, Bayesian, intents, Caputo, cross-substrate, active learning, MCP, LearnedField, streaming + DSL + notebook ergonomics — all shipped 2026-05-16 (see README §Session Log) | — (shipped) |
 | ~~v2.2~~ | ~~N-mode generalization (cut c)~~ — cancelled 2026-05-16; tombstone retained below | — |
-| **v4** | Streaming / online operation + symbolic query interface + notebook ergonomics | v3 (or v2.* if v3 deferred) |
-| **v5** | Continuous Banach self-test cadence + sensitivity backprop + gradient-based inversion replacing grid where invertible | v2.0 (v3/v4 optional) |
+| **v5** | Continuous Banach self-test cadence + sensitivity backprop + gradient-based inversion replacing grid where invertible | v2.0 |
 | **v6** | One-shot native port (Rust or C++). Zero new features. Per-seed reproducibility against the v5 Python. | v5 |
 
-Sequencing is the user's call per ROADMAP. The dependency column is
-the *minimum* — v5 can ship as soon as v2.0 lands if v3 / v4 are
-deferred (sensitivity_backprop / gradient-based inversion only need
-the JAX foundation that landed in v2.0).
+Sequencing is the user's call per ROADMAP. v5's dependency is v2.0
+(sensitivity_backprop / gradient-based inversion only need the JAX
+foundation); v4 is not load-bearing for v5 capabilities but its
+streaming surface is where v5's continuous self-test cadence applies
+per emitted frame — §v5 refinement below.
 
 ---
 
@@ -138,59 +140,6 @@ such re-opening per CLAUDE.md's no-eighth-operation rule.
 
 ---
 
-## §v4 — Streaming / online operation + symbolic query interface + notebook ergonomics
-
-**Goal.** Solver consumes substrate observations as a stream and
-emits canonical states as a stream — for real-time experiments and
-interactive analysis. Symbolic query interface (Mathematica-style).
-Notebook / REPL ergonomics across the board.
-
-**Capabilities to land.**
-
-- **Streaming API** — `forward_sweep_invert_stream(observations: Iterator[SubstrateState], field, tau_obs) -> Iterator[InversionResult]`.
-  State-local (per-frame); no cross-frame leakage. Supports stdin /
-  WebSocket / polling sources via thin adapters in `mpa_scale_solver.streams`.
-  The v3 MCP transport is stdio-per-call; v4's streaming is the
-  intra-call analogue (a single tool invocation pulling from an
-  iterator). v4 may expose a streaming MCP tool variant if a
-  consumer asks; defer until then.
-- **Symbolic query** — `query("what tau_obs makes substrate <id>
-  cross the c→s threshold?")` parses a small DSL and translates to
-  operation chains. Returns piecewise expressions where they exist +
-  numerical evaluations. v3's cross-substrate ops (`gamut_overlap`,
-  `canonical_distance`, `universality_agreement`) are likely natural
-  query targets; structure the DSL so they compose.
-- **Notebook ergonomics** — rich `__repr__` for every dataclass
-  (including v3's `LearnedField` and `MeasurementCandidate`);
-  default `_repr_html_` for Jupyter; default plot hooks (matplotlib
-  + plotly) per north-star §Visualization-first; lazy evaluation
-  where it helps.
-
-**Acceptance.**
-
-- v0 + v1 + v2 + v3 fixtures pass unchanged.
-- New: `test_streaming.py`, `test_symbolic_query.py`,
-  `test_notebook_repr.py`.
-- README + CLAUDE.md updated; §v4 deleted; §v5 refined if any
-  streaming-side reproducibility constraints surfaced.
-- Tagged `v4.0.0`.
-
-**Dependencies.** v3 shipped (or v2 if v3 deferred — the streaming
-shape doesn't require cross-substrate ops). Active-learning streaming
-benefits from v3's `suggest_measurements`; the symbolic-query DSL can
-target v3's cross-substrate ops directly.
-
-**Open / watch.**
-
-- Symbolic query is a feature-rich DSL. Scope risk: keep the v4
-  surface small (5 query patterns max) and defer richer DSL to a
-  later session if the demand surfaces.
-- Streaming MCP tool variant: hold until a consumer asks. The v3
-  MCP server's call-per-request shape already covers the common
-  agentic workflow.
-
----
-
 ## §v5 — Continuous Banach self-test + sensitivity backprop + gradient-based inversion
 
 **Goal.** Last functional version before native port. Continuous
@@ -205,7 +154,14 @@ monotonic regions (grid stays for ambiguity).
   default k=100) runs a side-test on the Banach substrate. Drift
   reported with full diagnostic state. ECC for compute. Self-tests
   are async / out-of-band where backend permits; never block the
-  primary call.
+  primary call. For the v4 streaming surface
+  (`forward_sweep_invert_stream`), the cadence applies per **emitted
+  frame** — every k-th `InversionResult` yielded by the generator
+  triggers a Banach self-test on the side. State-locality is
+  preserved (the self-test does not feed back into the primary
+  inversion); the self-test result rides on a side channel
+  (separate generator, optional callback, or trailing diagnostic
+  appended to the stream — design call at v5 session time).
 - **Sensitivity backprop** — full chain rule through
   `apply_translation → forward_sweep_invert → tau_obs_sweep` (the
   audit traversal). Builds on v2.0's `jax_core` /

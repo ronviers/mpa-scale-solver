@@ -69,6 +69,17 @@ class MeasurementCandidate:
     score: float
     components: dict[str, float]
 
+    def _repr_html_(self) -> str:
+        from .types import _html_table
+        comps = ", ".join(f"{k}={v:.4g}" for k, v in self.components.items())
+        return _html_table("MeasurementCandidate", [
+            ("state",
+             f"chit={self.state.chit:.4g}, gamma_AB={self.state.gamma_AB:.4g}"),
+            ("tau_obs", f"{self.tau_obs:.4g}"),
+            ("score", f"{self.score:.4g}"),
+            ("components", comps),
+        ])
+
 
 def suggest_measurements(
     field: AnyTranslationField,

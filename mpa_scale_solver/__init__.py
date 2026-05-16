@@ -92,6 +92,21 @@ from .active_learning import (
     suggest_measurements,
     suggest_measurements_wrapped,
 )
+from .streaming import (
+    # v4 streaming surface (BLOCK_IN §v4)
+    InversionResult,
+    forward_sweep_invert_stream,
+    from_iterable,
+    from_stdin,
+)
+from .symbolic_query import (
+    # v4 symbolic query DSL (BLOCK_IN §v4)
+    QueryParseError,
+    QueryResult,
+    query,
+    supported_patterns,
+)
+from . import plotting  # noqa: F401 — v4 default plot hooks (lazy backends)
 from .flow import flow
 from .banach import BanachSubstrate, build_sidecar_for_banach
 from .sidecar import lookup_forward, lookup_inverse, round_key
@@ -176,6 +191,16 @@ __all__ = [
     # operations — v3 (active learning)
     "suggest_measurements",
     "suggest_measurements_wrapped",
+    # v4 streaming surface
+    "InversionResult",
+    "forward_sweep_invert_stream",
+    "from_iterable",
+    "from_stdin",
+    # v4 symbolic query
+    "QueryParseError",
+    "QueryResult",
+    "query",
+    "supported_patterns",
     # v1 new functions / modules
     "flow",
     "BanachSubstrate",
