@@ -54,7 +54,7 @@ always — refine in place).
 |---|---|---|
 | v1–v5 | Foundation, JAX, Bayesian, intents, Caputo, cross-substrate, active learning, MCP, LearnedField, streaming + DSL + notebook ergonomics, continuous self-test + sensitivity backprop + gradient inversion — all shipped 2026-05-16 (see README §Session Log) | — (shipped) |
 | ~~v2.2~~ | ~~N-mode generalization (cut c)~~ — cancelled 2026-05-16; tombstone retained below | — |
-| **v6** | One-shot native port (Rust + WASM). Zero new features. Per-seed reproducibility against the v5 Python. Sessions 1-6 landed 2026-05-16 (math, types, raw forward path, gradient dispatcher, intent algebra); sessions 7-9 remaining (validation+provenance+wrapped, posterior, bindings). | v5 |
+| **v6** | One-shot native port (Rust + WASM). Zero new features. Per-seed reproducibility against the v5 Python. Sessions 1-7 landed 2026-05-16 (math, types, raw forward path, gradient dispatcher, intent algebra, validation+provenance+wrapped); sessions 8-9 remaining (posterior, bindings). | v5 |
 
 Sequencing is the user's call per ROADMAP. v6 is the only remaining
 version; the API surface and capability set are frozen as of v5.
@@ -350,6 +350,63 @@ mpa-conform's `import mpa_scale_solver` keeps working unchanged.
   test totals: **114/114 Rust tests pass** (57 src unit + 22
   bit-identity — was 21, +1 sacrifice parity + 17 math + 18
   types_smoke); Python 392/392 still green; WASM build still clean.
+- *Session 7 (2026-05-16):* **Validation + provenance + the eight
+  `*_wrapped` variants** + raw `validate_driver_profile`. Two new
+  modules: `rust/src/provenance.rs` (`make_provenance` +
+  `provenance_hash` + `SOLVER_VERSION` const = `"5.0.0"`, tracking
+  Python's `__version__`; cross-language hash parity is the
+  load-bearing contract here — the Cargo crate version is
+  deliberately decoupled), and `rust/src/validation.rs` (all 14
+  functions from `validation.py`: 3 checkers, 6 report builders,
+  per-intent RFC-S §5 metric + aggregator, bitfield encoder, plus
+  the typed `DriverProfileSummary` struct returned by
+  `validate_driver_profile`). `operations.rs` extended with the
+  raw `validate_driver_profile` + the 8 `*_wrapped` operations
+  exactly mirroring Python's `operations.py` lines 1316–1568;
+  sidecar dispatch is opt-in via `Option<&InverseLookupSidecar>`
+  on the three ops that have it (apply_translation,
+  forward_sweep_invert, tau_obs_sweep), matching Python. Per-intent
+  metric output is `BTreeMap<String, serde_json::Value>` (not a
+  parallel typed enum) — Python's `dict[str, Any]` is the consumer
+  contract and inventing a typed wrapper would force callers to
+  translate at the JSON boundary. **`timestamp_ns` discipline:**
+  Python uses `time.monotonic_ns()` (the BLOCK_IN session-7-prep
+  description said `time.time_ns()` — minor doc inaccuracy, doesn't
+  affect the port since timestamps are excluded from
+  `provenance_hash`); Rust uses a `OnceLock<Instant>` process-start
+  epoch and computes `epoch.elapsed().as_nanos()` — monotonic,
+  process-local, never bit-identity-compared. **Two new
+  bit-identity fixtures:** (1) `provenance_hash` (12 cases covering
+  every `DispatchPath` variant + null vs non-null `table_version`)
+  — exact-bit f64 equality on the rational `n / 2^32` hash;
+  required enabling `serde_json/float_roundtrip` because the
+  default lazy float parser was 1 ULP off Python on one of the 12
+  hashes (rational hash → no tolerance budget available).
+  (2) `operation_output_regime_at` (4 cases) — the representative
+  wrapped-variant wire parity for `OperationOutput<RegimeReading>`;
+  timestamps + note strings excluded by documented asymmetric
+  design (timestamps non-deterministic; notes have a Python/Rust
+  float-format divergence — `f"{0.0}"` is `"0.0"` in Python,
+  `format!("{}", 0.0)` is `"0"` in Rust). New deps: `blake2 =
+  "0.10"` (default-features off) for `provenance_hash`'s
+  `blake2b-32` digest, and `serde_json` gains the `float_roundtrip`
+  feature (~50 KB to wasm output). The thin-discipline decision on
+  `make_provenance` was explicit args (no kwargs / no builder) to
+  match the existing `operations.rs` style — Rust callers pass
+  `make_provenance("regime_at", DispatchPath::DirectCompute, None, vec![])`
+  verbosely. **167/167 Rust tests pass** (108 src unit — up from
+  57, +30 validation + 8 provenance + 13 wrapped-variant tests —
+  + 24 bit-identity — was 22, +1 provenance_hash + 1
+  operation_output_regime_at + 17 math + 18 types_smoke); Python
+  392/392 still green; `cargo build --release --target
+  wasm32-unknown-unknown` still clean. The session-2 fixture lesson
+  did not fire — both new fixtures specify all inputs and outputs
+  explicitly (provenance_hash takes operation/dispatch/table
+  literals; operation_output_regime_at takes canonical literals).
+  The session-6 schema-parity pattern extended cleanly to the
+  wrapped-variant wire format; the "asymmetric parity is documented
+  design" framing covers both timestamps and the note-string
+  float-format divergence.
 
 **Goal.** One-shot consolidation. Match the proven v5 Python under the
 per-seed reproducibility discipline. Free to parallelize aggressively
@@ -361,7 +418,10 @@ consumes).
 
 - ~~Math primitives (`jax_core.py`)~~ — landed session 1 at
   `rust/src/math.rs`.
-- Seven operations + `flow` + wrapped variants.
+- ~~Seven operations + `flow` + wrapped variants.~~ Raw ops + `flow`
+  landed sessions 4-6; wrapped variants + `validate_driver_profile`
+  + `validation.rs` + `provenance.rs` landed session 7. Surface
+  complete at the operations + validation + provenance layer.
 - All translation-field shapes (lookup_table, tangent_flow, learned).
 - Banach substrate + sidecar + InverseLookupSidecar dispatch.
 - **Continuous self-test cadence** — `self_test.py`'s
@@ -483,6 +543,32 @@ capability lands in v5 first via a v5.x release.
     would need a custom `Serialize` (one-helper, not currently
     needed since Python is the producer). See the session-6 log
     bullet for full rationale.
+  - ~~`OperationOutput<RegimeReading>` parity~~ — landed session 7
+    via the `operation_output_regime_at` fixture in
+    `jax_core_reference.json` + the
+    `operation_output_regime_at_python_to_rust_parity` test in
+    `bit_identity.rs`. Asymmetric-by-design: timestamps + note
+    strings are excluded — timestamps are non-deterministic; notes
+    have a Python/Rust float-formatting divergence (`f"{0.0}"` is
+    `"0.0"` in Python, `format!("{}", 0.0)` is `"0"` in Rust).
+    Structured fields (`value.regime`, `value.k_frust`, the three
+    `ValidationReport` flags, and `Provenance.{solver_version,
+    operation, dispatch_path, table_version}`) are bit/string-exact.
+    The pattern extends to each remaining wrapped op as
+    `cross_substrate.py` / `mcp_server.py` / etc. port; the
+    representative coverage at session 7 proves the wire format
+    works end-to-end. Full per-op coverage is a future
+    bit-identity-fixture extension, not a re-port.
+  - ~~`provenance_hash` bit-identity~~ — landed session 7 via the
+    `provenance_hash` fixture (12 cases covering every `DispatchPath`
+    variant + null vs non-null `table_version`) and the
+    `provenance_hash_python_to_rust_parity` test in
+    `bit_identity.rs`. Required `serde_json`'s `float_roundtrip`
+    feature flag — default serde_json's lazy float parser was 1 ULP
+    off Python's `json.loads` on one of the 12 hashes, and
+    `provenance_hash`'s rational `n / 2^32` value demands exact-bit
+    equality; the flag adds ~50 KB to wasm output and is documented
+    in `Cargo.toml`.
 - **`operations.py` deferred-session split.** Session 4 landed the
   raw forward path (`apply_translation` + three dispatch helpers,
   `forward_sweep_invert_grid`, `tau_obs_sweep_grid`, `regime_at`,
@@ -505,48 +591,40 @@ capability lands in v5 first via a v5.x release.
     (`IntentComposeEmpty`, `I2InComposition`). 26 new tests; 113/113
     Rust total. No new bit-identity fixtures (pure arithmetic — the
     pre-session prediction held).
-  - *Session 7 — validation + provenance + wrapped variants.*
-    Ports `validation.py` (492 LOC) and `provenance.py` (60 LOC),
-    then the eight `*_wrapped` operations stamping
-    `OperationOutput<T>` with `ValidationReport` + `Provenance`.
-    Threading discipline for `timestamp_ns` (Python uses
-    `time.time_ns()`) needs to be deterministic-replayable for
-    bit-identity to apply. Also covers the wrapped `method` kwarg
-    forwarding (session 5 deferred the wrapped test; same
-    behavior, just stamps the OperationOutput).
-    **Session-6 carry-overs (mostly resolved at session-6 end —
-    flagged here for context):**
-    1. `intent_map_wrapped` + `intent_compose_wrapped` are
-       straightforward — they wrap `intent_map` / `intent_compose`
-       (session 6, public) with an `OperationOutput<T>` shell. No
-       new design questions; mostly mechanical port.
-    2. `SacrificeRecord` Python→Rust JSON parity is already proven
-       (session 6 added `sacrifice_record_python_to_rust_json_parity`
-       in `bit_identity.rs`, exercising all 5 intents + 13 cases).
-       The asymmetric-parity design (`preserved_invariant` stored
-       Python-side, derived method Rust-side, dropped on read) is
-       documented; if session 7's `OperationOutput<T>` boundary
-       demands symmetric round-trip, add a custom `Serialize` on
-       `SacrificeRecord` emitting `preserved_invariant` from
-       `self.preserved_invariant()` (one helper, ~6 lines).
-    3. `report_for_intent_compose` Python helper aggregates
-       per-intent `invariant_preserved` into `k_frust_invariant`
-       on the wrapped `ValidationReport` — a one-line
-       `.iter().all()` in Rust; no new optimization.
-    The unresolved session-7-original work remains: the
-    `OperationOutput<T>` wire-format parity (Python emits via
-    `dataclasses.asdict` / `json.dumps`; Rust's serde derive needs
-    to produce field-compatible JSON — likely a new fixture
-    section + parity test pattern mirroring the session-6
-    sacrifice_record approach).
+  - ~~*Session 7 — validation + provenance + wrapped variants.*~~
+    Landed 2026-05-16 as v6.4.0 — see the §v6 session log bullet.
+    `validation.py` + `provenance.py` → `validation.rs` +
+    `provenance.rs`; the eight `*_wrapped` operations
+    (`apply_translation_wrapped`, `forward_sweep_invert_wrapped`,
+    `tau_obs_sweep_wrapped`, `regime_at_wrapped`,
+    `gamut_classify_wrapped`, `intent_map_wrapped`,
+    `intent_compose_wrapped`, `validate_driver_profile_wrapped`)
+    plus raw `validate_driver_profile`. Two parity-fixture
+    additions (provenance_hash, operation_output_regime_at — see
+    the per-fixture entries above). `blake2` + `serde_json/float_roundtrip`
+    added as deps; `SOLVER_VERSION = "5.0.0"` const tracks Python's
+    `__version__` (deliberate decoupling from the Cargo crate version).
   - *Session 8 — posterior.* `forward_sweep_invert_posterior` +
     `_wrapped`. Depends on the Laplace primitives already in
     `math.rs`; the wrapper builds a `Posterior` from a posterior
-    covariance + MAP point.
+    covariance + MAP point. The session-7-proven wrapped-variant
+    pattern (raw + `*_wrapped` stamping `OperationOutput<T>` +
+    `make_provenance` + dedicated `report_for_*` builder) is the
+    template — the posterior wrapper just substitutes
+    `report_for_forward_sweep_invert` (or a new
+    `report_for_posterior` if MAP-point asymptotic-flagging plus
+    singular-covariance detection wants its own builder; session-7
+    sketched the former). One new bit-identity fixture
+    (`operation_output_posterior` mirroring the session-7
+    `operation_output_regime_at` shape) extends the wrapped-variant
+    wire-parity coverage.
   - *Session 9 — bindings.* `pyo3` + `wasm-bindgen`. This is the
     one that makes v6 actually shippable — mpa-conform's
     `import mpa_scale_solver` keeps working unchanged; mpa-auditor
-    gains a browser-side native solver.
+    gains a browser-side native solver. Per-op `__call__` shims and
+    typed PyO3 conversions for the eight wrapped variants land here
+    (validation + provenance ride along automatically — they're
+    already `Serialize + Deserialize`).
   The session-2 fixture lesson (specify `(candidate, target)`
   pairs explicitly; never generate `target` from one impl and
   test the other) was load-bearing again in session 4: see the

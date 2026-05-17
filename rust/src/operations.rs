@@ -50,10 +50,16 @@ use crate::math::{
     tangent_flow_canonical_inverse, tangent_flow_substrate,
 };
 use crate::optim::minimize_smooth_2d;
+use crate::provenance::make_provenance;
+use crate::sidecar::{DEFAULT_ROUNDING_DECIMALS, lookup_forward, lookup_inverse};
 use crate::types::{
-    CanonicalState, CapacityClass, DisplayBand, GamutSpec, IntentDiagnostics, IntentId,
-    LearnedField, LookupTableField, RegimeLabel, RegimeReading, SacrificeRecord, SubstrateState,
-    TangentFlowField, TranslationField, TranslationRule,
+    CanonicalState, CapacityClass, DispatchPath, DisplayBand, GamutSpec, InverseLookupSidecar,
+    IntentDiagnostics, IntentId, LearnedField, LookupTableField, OperationOutput, RegimeLabel,
+    RegimeReading, SacrificeRecord, SubstrateState, TangentFlowField, TranslationField,
+    TranslationRule,
+};
+use crate::validation::{
+    self as _validation, DriverProfileSummary, per_intent_cell_metric, aggregate_per_intent_metrics,
 };
 
 use crate::gfdr_model::vertex_regime;
@@ -1297,6 +1303,511 @@ fn intent_i5(
     (mapped, sac)
 }
 
+// ===========================================================================
+// Op 7: validate_driver_profile (RFC-S §5 round-trip + per-intent metrics)
+// ===========================================================================
+
+/// One row of a reference dataset passed to `validate_driver_profile`.
+/// Mirror of Python's `dict[str, Any]` with the three documented keys.
+/// `expected_substrate=None` means "auto-compute via `apply_translation`",
+/// matching Python's `entry.get("expected_substrate")` path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReferenceDatasetEntry {
+    pub canonical_state: CanonicalState,
+    pub tau_obs: f64,
+    pub expected_substrate: Option<SubstrateState>,
+}
+
+/// RFC-S §5 round-trip validation with per-intent metrics. Mirror of
+/// Python's `validate_driver_profile` (operations.py).
+///
+/// For each entry of `reference_dataset`:
+///   1. Forward: predict the substrate observation via `apply_translation`.
+///   2. Inverse: recover the canonical via `forward_sweep_invert` (grid).
+///   3. Score: forward residual (vs `expected_substrate` if provided),
+///      round-trip residual (L2 in canonical space), regime agreement,
+///      per-intent cell metric per RFC-S §5.
+///
+/// The summary's `per_intent` block is the aggregate from
+/// `validation::aggregate_per_intent_metrics`. v2.3 back-compat keys
+/// (`forward_residuals`, `round_trip_residuals`, `regime_agreements`,
+/// `forward_mean`, `round_trip_mean`, `regime_agreement_rate`) are
+/// preserved verbatim.
+///
+/// `gamut` (optional) supplies the I4 survival check via
+/// `gamut_classify`; without it, I4's `survival` defaults to `true` per
+/// cell, matching Python.
+pub fn validate_driver_profile(
+    field: &TranslationField,
+    reference_dataset: &[ReferenceDatasetEntry],
+    canonical_search_grid: &[[f64; 2]],
+    intent_id: IntentId,
+    gamut: Option<&GamutSpec>,
+) -> Result<DriverProfileSummary, OperationError> {
+    let index = match field {
+        TranslationField::LookupTable(lt) => Some(TranslationFieldIndex::new(lt)),
+        _ => None,
+    };
+
+    let mut forward_residuals: Vec<f64> = Vec::with_capacity(reference_dataset.len());
+    let mut round_trip_residuals: Vec<f64> = Vec::with_capacity(reference_dataset.len());
+    let mut regime_agreements: Vec<bool> = Vec::with_capacity(reference_dataset.len());
+    let mut per_cell_metrics: Vec<std::collections::BTreeMap<String, Value>> =
+        Vec::with_capacity(reference_dataset.len());
+
+    for entry in reference_dataset {
+        let canonical = &entry.canonical_state;
+        let tau_obs = entry.tau_obs;
+
+        let predicted = if let Some(idx) = index.as_ref() {
+            apply_translation_indexed(
+                canonical,
+                idx,
+                tau_obs,
+                DEFAULT_DOMAIN_DISTANCE_THRESHOLD,
+                1.0,
+            )?
+        } else {
+            apply_translation(canonical, field, tau_obs, DEFAULT_DOMAIN_DISTANCE_THRESHOLD, 1.0)?
+        };
+
+        let fwd_err = if let Some(expected) = entry.expected_substrate.as_ref() {
+            default_substrate_score(&predicted, expected)
+        } else {
+            0.0
+        };
+        forward_residuals.push(fwd_err.sqrt());
+
+        // Run the grid inverter (Python `forward_sweep_invert` defaults to
+        // `method="auto"`, but `validate_driver_profile` in Python calls
+        // it without a method kwarg, so the default "auto" applies — which
+        // for LookupTable is grid, and for TangentFlow / Learned is
+        // closed-form / L-BFGS. We mirror by using `Method::Auto`).
+        let inv = forward_sweep_invert(
+            &predicted,
+            field,
+            tau_obs,
+            canonical_search_grid,
+            None,
+            None,
+            Method::Auto,
+            false,
+        )?;
+        // Python preserves k_frust from the truth canonical through the
+        // recovered state so the I1/I3 metrics that read it are aligned.
+        let recovered = CanonicalState {
+            chit: inv.best_state.chit,
+            gamma_AB: inv.best_state.gamma_AB,
+            k_frust: canonical.k_frust,
+        };
+
+        let d_chit = recovered.chit - canonical.chit;
+        let d_gamma = recovered.gamma_AB - canonical.gamma_AB;
+        let rt_err = (d_chit * d_chit + d_gamma * d_gamma).sqrt();
+        round_trip_residuals.push(rt_err);
+
+        let orig_r = regime_at(canonical, tau_obs).regime;
+        let rec_r = regime_at(&recovered, tau_obs).regime;
+        regime_agreements.push(orig_r == rec_r);
+
+        let in_gamut = gamut.map(|g| gamut_classify(&recovered, tau_obs, g).in_gamut);
+        per_cell_metrics.push(per_intent_cell_metric(
+            intent_id,
+            canonical,
+            &recovered,
+            in_gamut,
+        ));
+    }
+
+    let n = reference_dataset.len() as f64;
+    let forward_mean = if forward_residuals.is_empty() {
+        0.0
+    } else {
+        forward_residuals.iter().sum::<f64>() / n
+    };
+    let round_trip_mean = if round_trip_residuals.is_empty() {
+        0.0
+    } else {
+        round_trip_residuals.iter().sum::<f64>() / n
+    };
+    let regime_agreement_rate = if regime_agreements.is_empty() {
+        0.0
+    } else {
+        regime_agreements.iter().filter(|b| **b).count() as f64 / n
+    };
+
+    let per_intent = aggregate_per_intent_metrics(intent_id, &per_cell_metrics);
+
+    Ok(DriverProfileSummary {
+        intent: intent_id,
+        forward_residuals,
+        round_trip_residuals,
+        regime_agreements,
+        forward_mean,
+        round_trip_mean,
+        regime_agreement_rate,
+        per_intent,
+    })
+}
+
+// ===========================================================================
+// Wrapped variants — handoff §A.2 / §C.5 / §C.6
+// ===========================================================================
+//
+// Each `*_wrapped` calls the matching raw operation, then stamps a
+// ValidationReport + Provenance onto an OperationOutput<T>. Sidecar
+// dispatch (handoff §C.4) is opt-in via the `sidecar` parameter and is
+// meaningful for `apply_translation_wrapped`, `forward_sweep_invert_wrapped`,
+// and `tau_obs_sweep_wrapped`. The remaining wrapped variants have no
+// sidecar dispatch — they only attach validation + provenance.
+//
+// Rust signatures are verbose because Rust has no keyword arguments;
+// callers pass `None` / `&[]` / defaults explicitly. This matches the
+// style established by the raw operations in this module.
+
+/// Wrapped variant of `apply_translation` (handoff §A.2 / §C.5).
+pub fn apply_translation_wrapped(
+    canonical: &CanonicalState,
+    field: &TranslationField,
+    tau_obs: f64,
+    domain_distance_threshold: f64,
+    tau_obs_weight: f64,
+    sidecar: Option<&InverseLookupSidecar>,
+) -> Result<OperationOutput<SubstrateState>, OperationError> {
+    let mut dispatch = DispatchPath::DirectCompute;
+    let mut table_version: Option<String> = None;
+    let substrate = if let Some(sc) = sidecar {
+        table_version = Some(sc.version.clone());
+        match lookup_forward(sc, canonical, tau_obs, DEFAULT_ROUNDING_DECIMALS) {
+            Some(hit) => {
+                dispatch = DispatchPath::TableHit;
+                hit
+            }
+            None => {
+                dispatch = DispatchPath::ComputeFallback;
+                apply_translation(
+                    canonical,
+                    field,
+                    tau_obs,
+                    domain_distance_threshold,
+                    tau_obs_weight,
+                )?
+            }
+        }
+    } else {
+        apply_translation(
+            canonical,
+            field,
+            tau_obs,
+            domain_distance_threshold,
+            tau_obs_weight,
+        )?
+    };
+    let report = _validation::report_for_apply_translation(canonical, &substrate, &[]);
+    let prov = make_provenance("apply_translation", dispatch, table_version, Vec::new());
+    Ok(OperationOutput {
+        value: substrate,
+        validation: report,
+        provenance: prov,
+    })
+}
+
+/// Wrapped variant of `forward_sweep_invert`.
+///
+/// Sidecar dispatch is table-first: an inverse-table hit returns the
+/// recorded canonical with `dispatch_path = TableHit`; on miss the
+/// brute-force grid search runs with `dispatch_path = ComputeFallback`.
+///
+/// `compute_round_trip` controls whether the wrapped variant runs a
+/// forward-then-back recovery for the validation report's
+/// `round_trip_residual`. Default Python is `True`; turn off in tight
+/// inner loops (e.g. `tau_obs_sweep_wrapped`'s per-frame dispatch).
+///
+/// `method` is forwarded to `forward_sweep_invert`.
+pub fn forward_sweep_invert_wrapped(
+    target_substrate: &SubstrateState,
+    field: &TranslationField,
+    tau_obs: f64,
+    canonical_grid: &[[f64; 2]],
+    score_fn: Option<&dyn Fn(&SubstrateState, &SubstrateState) -> f64>,
+    forward_map: Option<&dyn Fn(&CanonicalState, f64) -> SubstrateState>,
+    sidecar: Option<&InverseLookupSidecar>,
+    compute_round_trip: bool,
+    method: Method,
+) -> Result<OperationOutput<CanonicalState>, OperationError> {
+    let mut dispatch = DispatchPath::DirectCompute;
+    let mut table_version: Option<String> = None;
+    let recovered = if let Some(sc) = sidecar {
+        table_version = Some(sc.version.clone());
+        match lookup_inverse(sc, target_substrate, tau_obs, DEFAULT_ROUNDING_DECIMALS) {
+            Some(hit) => {
+                dispatch = DispatchPath::TableHit;
+                hit
+            }
+            None => {
+                dispatch = DispatchPath::ComputeFallback;
+                forward_sweep_invert(
+                    target_substrate,
+                    field,
+                    tau_obs,
+                    canonical_grid,
+                    score_fn,
+                    forward_map,
+                    method,
+                    false,
+                )?
+                .best_state
+            }
+        }
+    } else {
+        forward_sweep_invert(
+            target_substrate,
+            field,
+            tau_obs,
+            canonical_grid,
+            score_fn,
+            forward_map,
+            method,
+            false,
+        )?
+        .best_state
+    };
+
+    let rt_residual: Option<f64> = if compute_round_trip {
+        // Forward-then-back via the same translation field. Python's
+        // version catches ValueError and substitutes +inf; the Rust port
+        // promotes any `OperationError` to the same `+inf` sentinel so
+        // the wrapped variant never propagates a round-trip failure
+        // (the residual carries the diagnostic).
+        match apply_translation(
+            &recovered,
+            field,
+            tau_obs,
+            DEFAULT_DOMAIN_DISTANCE_THRESHOLD,
+            1.0,
+        ) {
+            Ok(forward_back) => Some(default_substrate_score(&forward_back, target_substrate).sqrt()),
+            Err(_) => Some(f64::INFINITY),
+        }
+    } else {
+        None
+    };
+
+    let report = _validation::report_for_forward_sweep_invert(
+        target_substrate,
+        &recovered,
+        rt_residual,
+        &[],
+    );
+    let prov = make_provenance("forward_sweep_invert", dispatch, table_version, Vec::new());
+    Ok(OperationOutput {
+        value: recovered,
+        validation: report,
+        provenance: prov,
+    })
+}
+
+/// Wrapped variant of `tau_obs_sweep` — per-frame dispatch via
+/// `forward_sweep_invert_wrapped` with `compute_round_trip=false`.
+///
+/// The aggregate `provenance.dispatch_path` is `TableHit` only when
+/// every frame hit the table; otherwise `DirectCompute` and the
+/// per-frame mix is summarized in `notes`.
+pub fn tau_obs_sweep_wrapped(
+    targets: SweepTargets<'_>,
+    field: &TranslationField,
+    tau_obs_grid: &[f64],
+    canonical_search_grid: &[[f64; 2]],
+    score_fn: Option<&dyn Fn(&SubstrateState, &SubstrateState) -> f64>,
+    forward_map: Option<&dyn Fn(&CanonicalState, f64) -> SubstrateState>,
+    sidecar: Option<&InverseLookupSidecar>,
+) -> Result<OperationOutput<Vec<CanonicalState>>, OperationError> {
+    let n_frames = tau_obs_grid.len();
+    let resolved: Vec<&SubstrateState> = match targets {
+        SweepTargets::Broadcast(s) => vec![s; n_frames],
+        SweepTargets::PerFrame(list) => {
+            if list.len() != n_frames {
+                return Err(OperationError::TargetGridLengthMismatch {
+                    targets: list.len(),
+                    frames: n_frames,
+                });
+            }
+            list.iter().collect()
+        }
+    };
+
+    let mut trajectory: Vec<CanonicalState> = Vec::with_capacity(n_frames);
+    let mut n_table = 0usize;
+    let mut n_fallback = 0usize;
+    let mut n_direct = 0usize;
+
+    for (i, &tau) in tau_obs_grid.iter().enumerate() {
+        let out = forward_sweep_invert_wrapped(
+            resolved[i],
+            field,
+            tau,
+            canonical_search_grid,
+            score_fn,
+            forward_map,
+            sidecar,
+            false,
+            Method::Auto,
+        )?;
+        trajectory.push(out.value);
+        match out.provenance.dispatch_path {
+            DispatchPath::TableHit => n_table += 1,
+            DispatchPath::ComputeFallback => n_fallback += 1,
+            DispatchPath::DirectCompute => n_direct += 1,
+        }
+    }
+
+    let aggregate = if n_table == n_frames {
+        DispatchPath::TableHit
+    } else {
+        DispatchPath::DirectCompute
+    };
+    let notes = vec![format!(
+        "frames: table_hit={n_table}, compute_fallback={n_fallback}, direct_compute={n_direct}"
+    )];
+    let report = _validation::report_for_tau_obs_sweep(&trajectory);
+    let prov = make_provenance(
+        "tau_obs_sweep",
+        aggregate,
+        sidecar.map(|s| s.version.clone()),
+        notes,
+    );
+    Ok(OperationOutput {
+        value: trajectory,
+        validation: report,
+        provenance: prov,
+    })
+}
+
+/// Wrapped variant of `regime_at`.
+pub fn regime_at_wrapped(
+    canonical: &CanonicalState,
+    tau_obs: f64,
+) -> OperationOutput<RegimeReading> {
+    let reading = regime_at(canonical, tau_obs);
+    let report = _validation::report_for_regime_at(canonical);
+    let prov = make_provenance("regime_at", DispatchPath::DirectCompute, None, Vec::new());
+    OperationOutput {
+        value: reading,
+        validation: report,
+        provenance: prov,
+    }
+}
+
+/// Wrapped variant of `gamut_classify`.
+pub fn gamut_classify_wrapped(
+    canonical: &CanonicalState,
+    tau_obs: f64,
+    gamut: &GamutSpec,
+) -> OperationOutput<GamutClassification> {
+    let value = gamut_classify(canonical, tau_obs, gamut);
+    let report = _validation::report_for_gamut_classify(canonical);
+    let prov = make_provenance(
+        "gamut_classify",
+        DispatchPath::DirectCompute,
+        None,
+        Vec::new(),
+    );
+    OperationOutput {
+        value,
+        validation: report,
+        provenance: prov,
+    }
+}
+
+/// Wrapped variant of `intent_map`.
+pub fn intent_map_wrapped(
+    state: &CanonicalState,
+    tau_obs: f64,
+    gamut: &GamutSpec,
+    intent: IntentId,
+) -> OperationOutput<(CanonicalState, SacrificeRecord)> {
+    let (mapped, sacrifice) = intent_map(state, tau_obs, gamut, intent);
+    let report = _validation::report_for_intent_map(state, &mapped, &sacrifice);
+    let prov = make_provenance("intent_map", DispatchPath::DirectCompute, None, Vec::new());
+    OperationOutput {
+        value: (mapped, sacrifice),
+        validation: report,
+        provenance: prov,
+    }
+}
+
+/// Wrapped variant of `intent_compose` (RFC-S §3 composition).
+///
+/// Validation aggregates the per-intent `invariant_preserved` flags:
+/// `k_frust_invariant` is True only when every intent in the chain
+/// preserved its invariant. Per-intent failures are listed in notes.
+///
+/// Propagates `intent_compose`'s `Result` — empty intents and I2 in a
+/// composition surface as `OperationError`.
+pub fn intent_compose_wrapped(
+    state: &CanonicalState,
+    tau_obs: f64,
+    gamut: &GamutSpec,
+    intents: &[IntentId],
+) -> Result<OperationOutput<(CanonicalState, Vec<SacrificeRecord>)>, OperationError> {
+    let (mapped, sacrifices) = intent_compose(state, tau_obs, gamut, intents)?;
+    let report = _validation::report_for_intent_compose(state, &mapped, &sacrifices);
+    let intent_repr = format!(
+        "intents=({})",
+        intents
+            .iter()
+            .map(|i| match i {
+                IntentId::I1 => "I1",
+                IntentId::I2 => "I2",
+                IntentId::I3 => "I3",
+                IntentId::I4 => "I4",
+                IntentId::I5 => "I5",
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    let prov = make_provenance(
+        "intent_compose",
+        DispatchPath::DirectCompute,
+        None,
+        vec![intent_repr],
+    );
+    Ok(OperationOutput {
+        value: (mapped, sacrifices),
+        validation: report,
+        provenance: prov,
+    })
+}
+
+/// Wrapped variant of `validate_driver_profile`.
+pub fn validate_driver_profile_wrapped(
+    field: &TranslationField,
+    reference_dataset: &[ReferenceDatasetEntry],
+    canonical_search_grid: &[[f64; 2]],
+    intent_id: IntentId,
+    gamut: Option<&GamutSpec>,
+) -> Result<OperationOutput<DriverProfileSummary>, OperationError> {
+    let summary = validate_driver_profile(
+        field,
+        reference_dataset,
+        canonical_search_grid,
+        intent_id,
+        gamut,
+    )?;
+    let report = _validation::report_for_validate_driver_profile(&summary);
+    let prov = make_provenance(
+        "validate_driver_profile",
+        DispatchPath::DirectCompute,
+        None,
+        Vec::new(),
+    );
+    Ok(OperationOutput {
+        value: summary,
+        validation: report,
+        provenance: prov,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2472,5 +2983,319 @@ mod tests {
             assert!((state.chit - 0.5).abs() < 1e-12);
             assert!((state.gamma_AB - 0.5).abs() < 1e-12);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Wrapped variants (session 7) — mirrors of tests/test_validation.py
+    // TestWrappedReports + tests/test_provenance.py TestProvenanceOnEachWrappedOp.
+    // -----------------------------------------------------------------------
+
+    use crate::provenance::{SOLVER_VERSION, provenance_hash};
+    use crate::validation::validation_flags_bitfield;
+
+    fn substrate_obs(chit: f64, gamma_AB: f64, tau_obs: f64) -> SubstrateState {
+        SubstrateState {
+            tau_obs,
+            label: None,
+            axes: BTreeMap::new(),
+            observables: {
+                let mut m = BTreeMap::new();
+                m.insert("substrate_chit".to_string(), chit);
+                m.insert("substrate_gamma_AB".to_string(), gamma_AB);
+                m
+            },
+        }
+    }
+
+    fn trivial_canonical() -> CanonicalState {
+        CanonicalState {
+            chit: 0.5,
+            gamma_AB: -0.3,
+            k_frust: false,
+        }
+    }
+
+    fn trivial_field() -> TranslationField {
+        // Identity tangent-flow at tau_obs=1 — substrate(chit) = chit (at ref).
+        TranslationField::TangentFlow(tangent_flow_field(0.0, 0.0))
+    }
+
+    #[test]
+    fn wrapped_apply_translation_report_shape() {
+        let out = apply_translation_wrapped(
+            &trivial_canonical(),
+            &trivial_field(),
+            1.0,
+            DEFAULT_DOMAIN_DISTANCE_THRESHOLD,
+            1.0,
+            None,
+        )
+        .unwrap();
+        assert!(out.validation.asymptotic_closure_compliant);
+        assert!(out.validation.k_frust_invariant);
+        assert!(out.validation.round_trip_residual.is_none());
+        assert_eq!(out.provenance.operation, "apply_translation");
+        assert_eq!(out.provenance.dispatch_path, DispatchPath::DirectCompute);
+        assert_eq!(out.provenance.solver_version, SOLVER_VERSION);
+    }
+
+    #[test]
+    fn wrapped_apply_translation_flags_zero_input() {
+        let zero_chit = CanonicalState {
+            chit: 0.0,
+            gamma_AB: -0.3,
+            k_frust: false,
+        };
+        let out = apply_translation_wrapped(
+            &zero_chit,
+            &trivial_field(),
+            1.0,
+            DEFAULT_DOMAIN_DISTANCE_THRESHOLD,
+            1.0,
+            None,
+        )
+        .unwrap();
+        assert!(!out.validation.asymptotic_closure_compliant);
+        assert!(out.validation.notes.iter().any(|n| n.contains("chit")));
+    }
+
+    #[test]
+    fn wrapped_forward_sweep_invert_round_trip_small() {
+        // Identity tangent flow at tau=1: every grid candidate's forward
+        // map matches itself. Grid contains the truth -> residual ~ 0.
+        let target = substrate_obs(0.4, -0.2, 1.0);
+        let grid: Vec<[f64; 2]> = vec![[0.4, -0.2], [0.5, -0.3]];
+        let out = forward_sweep_invert_wrapped(
+            &target,
+            &trivial_field(),
+            1.0,
+            &grid,
+            None,
+            None,
+            None,
+            true,
+            Method::Grid,
+        )
+        .unwrap();
+        let rt = out.validation.round_trip_residual.expect("residual set");
+        assert!(rt < 1e-10, "round-trip residual {rt} not near zero");
+        assert_eq!(out.provenance.operation, "forward_sweep_invert");
+    }
+
+    #[test]
+    fn wrapped_tau_obs_sweep_notes_carry_frame_counts() {
+        let target = substrate_obs(0.5, 0.5, 1.0);
+        let tau_grid = [0.5, 1.0, 2.0];
+        let canonical_grid: Vec<[f64; 2]> = (0..11)
+            .flat_map(|i| (0..11).map(move |j| [(i as f64) * 0.1, (j as f64) * 0.1]))
+            .collect();
+        let out = tau_obs_sweep_wrapped(
+            SweepTargets::Broadcast(&target),
+            &trivial_field(),
+            &tau_grid,
+            &canonical_grid,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out.value.len(), 3);
+        assert!(
+            out.provenance
+                .notes
+                .iter()
+                .any(|n| n.starts_with("frames:"))
+        );
+        // No sidecar → every frame is direct_compute → aggregate is direct.
+        assert_eq!(out.provenance.dispatch_path, DispatchPath::DirectCompute);
+        assert_eq!(out.provenance.operation, "tau_obs_sweep");
+    }
+
+    #[test]
+    fn wrapped_regime_at_carries_report() {
+        let out = regime_at_wrapped(&trivial_canonical(), 1.0);
+        assert!(out.validation.asymptotic_closure_compliant);
+        assert_eq!(out.value.regime, RegimeLabel::CNearS);
+        assert_eq!(out.provenance.operation, "regime_at");
+    }
+
+    #[test]
+    fn wrapped_gamut_classify_carries_report() {
+        let gamut = GamutSpec {
+            chit_range: (-1.0, 1.0),
+            gamma_AB_range: (-1.0, 1.0),
+            tau_obs_range: None,
+            out_of_scope_residual_threshold: 0.05,
+        };
+        let out = gamut_classify_wrapped(&trivial_canonical(), 1.0, &gamut);
+        assert!(out.value.in_gamut);
+        assert!(out.validation.asymptotic_closure_compliant);
+        assert_eq!(out.provenance.operation, "gamut_classify");
+    }
+
+    #[test]
+    fn wrapped_intent_map_flags_regime_break() {
+        // out-of-gamut deep_c → I5 maps into [-0.5, 0.5] gamut at c_near_s.
+        let gamut = GamutSpec {
+            chit_range: (-0.5, 0.5),
+            gamma_AB_range: (-1.0, 1.0),
+            tau_obs_range: None,
+            out_of_scope_residual_threshold: 0.05,
+        };
+        let oog = CanonicalState {
+            chit: 2.0,
+            gamma_AB: 0.0,
+            k_frust: false,
+        };
+        let out = intent_map_wrapped(&oog, 1.0, &gamut, IntentId::I5);
+        let (_mapped, sac) = &out.value;
+        assert!(!sac.invariant_preserved);
+        assert!(!out.validation.k_frust_invariant);
+        assert!(out.validation.notes.iter().any(|n| n.contains("regime")));
+        assert_eq!(out.provenance.operation, "intent_map");
+    }
+
+    #[test]
+    fn wrapped_intent_compose_empty_errors() {
+        let gamut = GamutSpec {
+            chit_range: (-1.0, 1.0),
+            gamma_AB_range: (-1.0, 1.0),
+            tau_obs_range: None,
+            out_of_scope_residual_threshold: 0.05,
+        };
+        let err = intent_compose_wrapped(&trivial_canonical(), 1.0, &gamut, &[])
+            .err()
+            .unwrap();
+        assert_eq!(err, OperationError::IntentComposeEmpty);
+    }
+
+    #[test]
+    fn wrapped_intent_compose_i2_in_composition_errors() {
+        let gamut = GamutSpec {
+            chit_range: (-1.0, 1.0),
+            gamma_AB_range: (-1.0, 1.0),
+            tau_obs_range: None,
+            out_of_scope_residual_threshold: 0.05,
+        };
+        let err = intent_compose_wrapped(
+            &trivial_canonical(),
+            1.0,
+            &gamut,
+            &[IntentId::I1, IntentId::I2],
+        )
+        .err()
+        .unwrap();
+        assert_eq!(err, OperationError::I2InComposition);
+    }
+
+    #[test]
+    fn wrapped_intent_compose_notes_carry_intent_repr() {
+        let gamut = GamutSpec {
+            chit_range: (-1.0, 1.0),
+            gamma_AB_range: (-1.0, 1.0),
+            tau_obs_range: None,
+            out_of_scope_residual_threshold: 0.05,
+        };
+        let out = intent_compose_wrapped(
+            &trivial_canonical(),
+            1.0,
+            &gamut,
+            &[IntentId::I1, IntentId::I3],
+        )
+        .unwrap();
+        assert_eq!(out.provenance.operation, "intent_compose");
+        assert!(
+            out.provenance
+                .notes
+                .iter()
+                .any(|n| n.contains("intents=(I1, I3)"))
+        );
+    }
+
+    #[test]
+    fn wrapped_validate_driver_profile_one_cell() {
+        let dataset = vec![ReferenceDatasetEntry {
+            canonical_state: trivial_canonical(),
+            tau_obs: 1.0,
+            expected_substrate: None,
+        }];
+        let grid: Vec<[f64; 2]> = vec![[0.5, -0.3], [0.4, -0.2]];
+        let out = validate_driver_profile_wrapped(
+            &trivial_field(),
+            &dataset,
+            &grid,
+            IntentId::I5,
+            None,
+        )
+        .unwrap();
+        assert_eq!(out.value.intent, IntentId::I5);
+        assert_eq!(out.value.forward_residuals.len(), 1);
+        assert_eq!(out.value.round_trip_residuals.len(), 1);
+        // Round-trip ≈ 0 because the grid contains the truth.
+        assert!(out.value.round_trip_mean < 1e-10);
+        assert_eq!(out.provenance.operation, "validate_driver_profile");
+    }
+
+    #[test]
+    fn wrapped_validate_driver_profile_empty_dataset_short_shape() {
+        // Empty dataset → per_intent aggregate is {intent, n_cells} only.
+        let grid: Vec<[f64; 2]> = vec![[0.0, 0.0]];
+        let out = validate_driver_profile_wrapped(
+            &trivial_field(),
+            &[],
+            &grid,
+            IntentId::I5,
+            None,
+        )
+        .unwrap();
+        let per_intent = &out.value.per_intent;
+        assert_eq!(per_intent.len(), 2);
+        assert_eq!(per_intent["intent"], serde_json::json!("I5"));
+        assert_eq!(per_intent["n_cells"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn wrapped_bitfield_all_pass_is_three() {
+        // No round-trip residual on apply_translation_wrapped → bit 2 = 0;
+        // bits 0,1 = 1 → 3.
+        let out = apply_translation_wrapped(
+            &trivial_canonical(),
+            &trivial_field(),
+            1.0,
+            DEFAULT_DOMAIN_DISTANCE_THRESHOLD,
+            1.0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(validation_flags_bitfield(&out.validation), 3.0);
+    }
+
+    #[test]
+    fn wrapped_bitfield_asymptotic_flag_drops_bit_zero() {
+        let zero_chit = CanonicalState {
+            chit: 0.0,
+            gamma_AB: -0.3,
+            k_frust: false,
+        };
+        let out = apply_translation_wrapped(
+            &zero_chit,
+            &trivial_field(),
+            1.0,
+            DEFAULT_DOMAIN_DISTANCE_THRESHOLD,
+            1.0,
+            None,
+        )
+        .unwrap();
+        // bit 0 cleared, bits 1 still set → 2.
+        assert_eq!(validation_flags_bitfield(&out.validation), 2.0);
+    }
+
+    #[test]
+    fn wrapped_provenance_hash_stable_across_wrapped_calls() {
+        // Two wrapped calls with the same shape stamp provenance records
+        // whose hashes are byte-equal (timestamps excluded from the hash).
+        let a = regime_at_wrapped(&trivial_canonical(), 1.0);
+        let b = regime_at_wrapped(&trivial_canonical(), 1.0);
+        assert_eq!(provenance_hash(&a.provenance), provenance_hash(&b.provenance));
     }
 }

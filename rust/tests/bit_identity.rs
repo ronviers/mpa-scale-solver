@@ -42,11 +42,13 @@ use mpa_scale_solver::math::{
     lookup_squared_distance, mlp_forward, tangent_flow_canonical,
     tangent_flow_canonical_inverse, tangent_flow_inversion_residual, tangent_flow_substrate,
 };
+use mpa_scale_solver::operations::regime_at_wrapped;
+use mpa_scale_solver::provenance::{make_provenance, provenance_hash, SOLVER_VERSION};
 use mpa_scale_solver::sidecar::round_key;
 use mpa_scale_solver::types::{
-    CanonicalPoint, CanonicalState, CapacityClass, Direction, Gt, IntentDiagnostics, IntentId,
-    OperatingPoint, RegimeLabel, SacrificeRecord, ScalingRule, TangentFlowField, TranslationField,
-    TranslationRule,
+    CanonicalPoint, CanonicalState, CapacityClass, Direction, DispatchPath, Gt, IntentDiagnostics,
+    IntentId, OperatingPoint, RegimeLabel, SacrificeRecord, ScalingRule, TangentFlowField,
+    TranslationField, TranslationRule,
 };
 use serde_json::Value;
 
@@ -169,6 +171,14 @@ fn fixture_covers_all_expected_primitives() {
         // Schema parity, not bit-identity — see the dedicated test
         // below for the Python→Rust JSON parity contract.
         "sacrifice_record",
+        // session 7 — provenance + wrapped-variant wire parity.
+        // `provenance_hash` is bit-identity (4-byte blake2b digest must
+        // match exactly); `operation_output_regime_at` is schema parity
+        // (structured fields; timestamps + notes excluded — see the
+        // section header in `emit_jax_core_reference.py` and the notes
+        // asymmetry note in CLAUDE.md).
+        "provenance_hash",
+        "operation_output_regime_at",
     ];
     assert_eq!(
         obj.len(),
@@ -1135,6 +1145,198 @@ fn sacrifice_record_python_to_rust_json_parity() {
         assert!(
             intents_seen.contains(&required),
             "sacrifice_record fixture missing case for {required:?}",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Session 7 — provenance + wrapped-variant wire parity
+// ---------------------------------------------------------------------------
+
+fn parse_dispatch_path(s: &str) -> DispatchPath {
+    match s {
+        "direct_compute" => DispatchPath::DirectCompute,
+        "table_hit" => DispatchPath::TableHit,
+        "compute_fallback" => DispatchPath::ComputeFallback,
+        other => panic!("unknown dispatch_path: {other}"),
+    }
+}
+
+fn regime_label_str(label: RegimeLabel) -> &'static str {
+    match label {
+        RegimeLabel::DeepC => "deep_c",
+        RegimeLabel::CNearS => "c_near_s",
+        RegimeLabel::SCritical => "s_critical",
+        RegimeLabel::RNearS => "r_near_s",
+        RegimeLabel::DeepR => "deep_r",
+    }
+}
+
+/// Cross-language bit-identity for `provenance_hash`. The 4-byte
+/// blake2b digest must match Python's exactly — any drift in the
+/// (solver_version | operation | dispatch_path | table_version)
+/// payload encoding or in the integer-to-`[0, 1)` mapping breaks the
+/// EXR-channel provenance fingerprint contract.
+#[test]
+fn provenance_hash_python_to_rust_parity() {
+    let fixture = load_fixture();
+    let cases = fixture["provenance_hash"]
+        .as_array()
+        .expect("provenance_hash array");
+    assert!(!cases.is_empty(), "provenance_hash fixture must be non-empty");
+
+    for (i, case) in cases.iter().enumerate() {
+        let inputs = &case["inputs"];
+        let op = inputs["operation"].as_str().expect("operation str");
+        let dp_str = inputs["dispatch_path"].as_str().expect("dispatch_path str");
+        let dp = parse_dispatch_path(dp_str);
+        let tv = inputs["table_version"].as_str().map(|s| s.to_string());
+        let expected = case["output"].as_f64().expect("output f64");
+
+        let prov = make_provenance(op, dp, tv, Vec::new());
+        let actual = provenance_hash(&prov);
+
+        // Bit-identity: equal f64 bits. The hash is rational
+        // (uint / 2^32) so exact equality is the right contract.
+        assert_eq!(
+            actual.to_bits(),
+            expected.to_bits(),
+            "provenance_hash[{i}] ({op}, {dp_str}, {tv:?}): \
+             expected {expected:.17e}, got {actual:.17e}",
+            tv = inputs["table_version"],
+        );
+    }
+
+    // Coverage: every dispatch path should appear at least once, and at
+    // least one table_version=null + at least one table_version=string.
+    let mut dps: BTreeMap<String, bool> = BTreeMap::new();
+    let mut has_null_tv = false;
+    let mut has_str_tv = false;
+    for case in cases {
+        let dp = case["inputs"]["dispatch_path"].as_str().unwrap();
+        dps.insert(dp.to_string(), true);
+        if case["inputs"]["table_version"].is_null() {
+            has_null_tv = true;
+        } else {
+            has_str_tv = true;
+        }
+    }
+    for required in ["direct_compute", "table_hit", "compute_fallback"] {
+        assert!(
+            dps.contains_key(required),
+            "provenance_hash fixture missing dispatch_path={required}",
+        );
+    }
+    assert!(has_null_tv, "fixture missing a null table_version case");
+    assert!(has_str_tv, "fixture missing a non-null table_version case");
+}
+
+/// Cross-language wire parity for `OperationOutput<RegimeReading>`.
+///
+/// Structured-field equality only: timestamps are non-deterministic
+/// (Python uses `time.monotonic_ns()`, Rust uses `Instant`-elapsed),
+/// and the notes diagnostic strings have a float-formatting divergence
+/// (`f"{0.0}"` is `"0.0"` in Python, `format!("{}", 0.0)` is `"0"` in
+/// Rust — see CLAUDE.md asymmetry note). Both exclusions are by design;
+/// the load-bearing contract is the structured flags and the provenance
+/// hash inputs.
+#[test]
+fn operation_output_regime_at_python_to_rust_parity() {
+    let fixture = load_fixture();
+    let cases = fixture["operation_output_regime_at"]
+        .as_array()
+        .expect("operation_output_regime_at array");
+    assert!(
+        !cases.is_empty(),
+        "operation_output_regime_at fixture must be non-empty",
+    );
+
+    for case in cases {
+        let label = case["label"].as_str().unwrap_or("<unlabeled>");
+        let inputs = &case["inputs"];
+        let canonical = CanonicalState {
+            chit: inputs["chit"].as_f64().expect("chit"),
+            gamma_AB: inputs["gamma_AB"].as_f64().expect("gamma_AB"),
+            k_frust: inputs["k_frust"].as_bool().expect("k_frust"),
+        };
+        let tau_obs = inputs["tau_obs"].as_f64().expect("tau_obs");
+
+        let out = regime_at_wrapped(&canonical, tau_obs);
+        let expected = &case["output"];
+
+        // value: regime label string + k_frust bool
+        let py_regime = expected["value"]["regime"].as_str().unwrap();
+        assert_eq!(
+            regime_label_str(out.value.regime),
+            py_regime,
+            "{label}: value.regime",
+        );
+        assert_eq!(
+            out.value.k_frust,
+            expected["value"]["k_frust"].as_bool().unwrap(),
+            "{label}: value.k_frust",
+        );
+
+        // validation: three structured flags. Notes excluded per the
+        // documented float-formatting asymmetry above.
+        assert_eq!(
+            out.validation.asymptotic_closure_compliant,
+            expected["validation"]["asymptotic_closure_compliant"]
+                .as_bool()
+                .unwrap(),
+            "{label}: asymptotic_closure_compliant",
+        );
+        assert_eq!(
+            out.validation.k_frust_invariant,
+            expected["validation"]["k_frust_invariant"].as_bool().unwrap(),
+            "{label}: k_frust_invariant",
+        );
+        let py_rt = &expected["validation"]["round_trip_residual"];
+        match (out.validation.round_trip_residual, py_rt) {
+            (None, v) if v.is_null() => (),
+            (Some(actual), v) if v.is_f64() => {
+                let expected_f = v.as_f64().unwrap();
+                assert_eq!(
+                    actual.to_bits(),
+                    expected_f.to_bits(),
+                    "{label}: round_trip_residual",
+                );
+            }
+            other => panic!(
+                "{label}: round_trip_residual mismatch — Rust {:?}, Python {py_rt}",
+                other.0,
+            ),
+        }
+
+        // provenance: solver_version + operation + dispatch_path + table_version.
+        // timestamp_ns excluded (non-deterministic; both impls are monotonic
+        // but the reference epoch is process-local on each side).
+        assert_eq!(
+            out.provenance.solver_version,
+            expected["provenance"]["solver_version"].as_str().unwrap(),
+            "{label}: solver_version",
+        );
+        assert_eq!(
+            out.provenance.solver_version, SOLVER_VERSION,
+            "{label}: Rust SOLVER_VERSION must equal Python __version__",
+        );
+        assert_eq!(
+            out.provenance.operation,
+            expected["provenance"]["operation"].as_str().unwrap(),
+            "{label}: operation",
+        );
+        assert_eq!(
+            out.provenance.dispatch_path,
+            parse_dispatch_path(
+                expected["provenance"]["dispatch_path"].as_str().unwrap()
+            ),
+            "{label}: dispatch_path",
+        );
+        let py_tv = expected["provenance"]["table_version"].as_str();
+        assert_eq!(
+            out.provenance.table_version.as_deref(),
+            py_tv,
+            "{label}: table_version",
         );
     }
 }

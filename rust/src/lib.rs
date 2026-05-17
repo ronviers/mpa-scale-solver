@@ -13,19 +13,27 @@
 //!   operations.py      → operations.rs  (session 4: raw forward path;
 //!                                        session 5: gradient inversion
 //!                                        dispatcher; session 6: intent
-//!                                        algebra; wrapped variants +
-//!                                        posterior land in subsequent
-//!                                        sessions per BLOCK_IN §v6)
+//!                                        algebra; session 7: raw
+//!                                        validate_driver_profile + the
+//!                                        8 *_wrapped variants;
+//!                                        posterior lands session 8)
 //!   sensitivity.py     → sensitivity.rs (future session)
 //!   self_test.py       → self_test.rs   (future session)
 //!   streaming.py       → streaming.rs   (future session)
-//!   validation.py      → validation.rs  (future session)
-//!   provenance.py      → provenance.rs  (future session)
+//!   validation.py      → validation.rs  (session 7: checkers, report
+//!                                        builders, per-intent RFC-S §5
+//!                                        metrics, bitfield encoder)
+//!   provenance.py      → provenance.rs  (session 7: make_provenance +
+//!                                        provenance_hash; SOLVER_VERSION
+//!                                        const tracking Python's
+//!                                        __version__ for hash parity)
 
 pub mod flow;
 pub mod gfdr_model;
 pub mod math;
 pub mod operations;
 pub mod optim;
+pub mod provenance;
 pub mod sidecar;
 pub mod types;
+pub mod validation;

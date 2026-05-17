@@ -30,11 +30,16 @@ import jax.numpy as jnp
 
 from mpa_scale_solver import jax_core, gfdr_model
 from mpa_scale_solver.flow import flow as flow_op
-from mpa_scale_solver.operations import intent_map as intent_map_op
+from mpa_scale_solver.operations import (
+    intent_map as intent_map_op,
+    regime_at_wrapped as regime_at_wrapped_op,
+)
+from mpa_scale_solver.provenance import make_provenance, provenance_hash
 from mpa_scale_solver.sidecar import round_key as sidecar_round_key
 from mpa_scale_solver.types import (
     CanonicalPoint,
     CanonicalState,
+    DispatchPath,
     GamutSpec,
     OperatingPoint,
     ScalingRule,
@@ -798,6 +803,103 @@ def cases_sacrifice_record() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Session 7 — provenance / wrapped-output parity (schema, not bit-id)
+# ---------------------------------------------------------------------------
+#
+# `provenance_hash` is the load-bearing cross-language hash: the four
+# (solver_version, operation, dispatch_path, table_version) inputs must
+# produce the same 4-byte blake2b digest in Python and Rust. The fixture
+# emits the hash and Rust replays the input + asserts byte-equality.
+#
+# `operation_output_regime_at` is the wrapped-variant wire-format parity
+# (matches the session-6 sacrifice_record approach). Timestamps and note
+# strings are excluded from the fixture — see the session-7 note in
+# CLAUDE.md / BLOCK_IN about the documented diagnostic-string asymmetry.
+
+
+def cases_provenance_hash() -> list[dict]:
+    """Hash inputs that cross every Python branch of the encoding."""
+    rows = [
+        ("apply_translation", DispatchPath.DIRECT_COMPUTE, None),
+        ("apply_translation", DispatchPath.TABLE_HIT, "banach-1.0.0"),
+        ("apply_translation", DispatchPath.COMPUTE_FALLBACK, "banach-1.0.0"),
+        ("forward_sweep_invert", DispatchPath.DIRECT_COMPUTE, None),
+        ("forward_sweep_invert", DispatchPath.TABLE_HIT, "sidecar-v2-A"),
+        ("tau_obs_sweep", DispatchPath.DIRECT_COMPUTE, None),
+        ("regime_at", DispatchPath.DIRECT_COMPUTE, None),
+        ("gamut_classify", DispatchPath.DIRECT_COMPUTE, None),
+        ("intent_map", DispatchPath.DIRECT_COMPUTE, None),
+        ("intent_compose", DispatchPath.DIRECT_COMPUTE, None),
+        ("validate_driver_profile", DispatchPath.DIRECT_COMPUTE, None),
+        # Cross-table-version case so Rust-side tests catch the
+        # version-string contribution to the hash.
+        ("apply_translation", DispatchPath.TABLE_HIT, "banach-2.0.0"),
+    ]
+    out = []
+    for op, dp, tv in rows:
+        prov = make_provenance(op, dispatch_path=dp, table_version=tv)
+        out.append({
+            "inputs": {
+                "operation": op,
+                "dispatch_path": dp.value,
+                "table_version": tv,
+            },
+            "output": provenance_hash(prov),
+        })
+    return out
+
+
+def cases_operation_output_regime_at() -> list[dict]:
+    """End-to-end wrapped-variant JSON parity for `regime_at_wrapped`.
+
+    Chosen because `regime_at` is the simplest wrapped op (no sidecar,
+    no round-trip, no per-cell aggregation) — it exercises the
+    `OperationOutput<T>` wire format with the least incidental surface.
+    Timestamps and note strings are excluded from the emitted JSON; the
+    Rust test compares the structured fields. The float-formatting
+    divergence between Python `f"{0.0}"` ("0.0") and Rust `format!("{}", 0.0)`
+    ("0") is the documented reason notes don't ride on this fixture.
+    """
+    out = []
+    for (chit, gamma_AB, k_frust, tau_obs, label) in [
+        (0.5, -0.2, False, 1.0, "c_near_s clean"),
+        (0.95, 0.1, True, 1.0, "deep_c with k_frust"),
+        (-0.4, 0.3, False, 1.0, "s_critical region"),
+        (-0.8, 0.0, False, 1.0, "deep_r"),
+    ]:
+        cs = CanonicalState(chit=chit, gamma_AB=gamma_AB, k_frust=k_frust)
+        op_out = regime_at_wrapped_op(cs, tau_obs)
+        out.append({
+            "label": label,
+            "inputs": {
+                "chit": chit,
+                "gamma_AB": gamma_AB,
+                "k_frust": k_frust,
+                "tau_obs": tau_obs,
+            },
+            "output": {
+                "value": {
+                    "regime": op_out.value.regime,
+                    "k_frust": op_out.value.k_frust,
+                },
+                "validation": {
+                    "asymptotic_closure_compliant":
+                        op_out.validation.asymptotic_closure_compliant,
+                    "k_frust_invariant": op_out.validation.k_frust_invariant,
+                    "round_trip_residual": op_out.validation.round_trip_residual,
+                },
+                "provenance": {
+                    "solver_version": op_out.provenance.solver_version,
+                    "operation": op_out.provenance.operation,
+                    "dispatch_path": op_out.provenance.dispatch_path.value,
+                    "table_version": op_out.provenance.table_version,
+                },
+            },
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -826,6 +928,9 @@ PRIMITIVES = {
     "flow": cases_flow,
     # session 6 — operations.py intent algebra (schema parity, not bit-id)
     "sacrifice_record": cases_sacrifice_record,
+    # session 7 — provenance + wrapped-variant wire parity
+    "provenance_hash": cases_provenance_hash,
+    "operation_output_regime_at": cases_operation_output_regime_at,
 }
 
 

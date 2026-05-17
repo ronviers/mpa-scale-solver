@@ -345,6 +345,82 @@ deferred to session 7 alongside `validation.rs` + `provenance.rs`
 + the `*_wrapped` variants — same deferral pattern session 5
 used for wrapped-variant gradient tests.
 
+validation.rs + provenance.rs + raw validate_driver_profile +
+8 wrapped variants (session 7): two new src modules and
+`operations.rs` extensions completing the validation /
+provenance / wrapped-variant surface. **provenance.rs** carries
+`make_provenance(operation, dispatch_path, table_version, notes)`
+returning a `Provenance` and `provenance_hash(&Provenance)`
+returning an f64 in `[0, 1)` (blake2b-32 of
+`solver_version|operation|dispatch_path|table_version`, mapped
+via `u32 / 2^32`); `SOLVER_VERSION = "5.0.0"` is a deliberately-
+decoupled constant tracking Python's `__version__` rather than
+the Cargo crate version — `provenance_hash` includes
+solver_version in the payload, so cross-language hash parity is
+load-bearing. `timestamp_ns` uses a process-start
+`OnceLock<Instant>` epoch and `epoch.elapsed().as_nanos()` —
+monotonic per-process, never bit-identity-compared (Python
+counterpart is `time.monotonic_ns()`). **validation.rs** ports
+all 14 functions from `validation.py`: three checkers
+(`check_asymptotic_closure_canonical/substrate`,
+`check_k_frust_invariance`), six per-op report builders
+(`report_for_apply_translation`,
+`report_for_forward_sweep_invert`, `report_for_tau_obs_sweep`,
+`report_for_regime_at`, `report_for_gamut_classify`,
+`report_for_intent_map`, `report_for_intent_compose`,
+`report_for_validate_driver_profile`), per-intent RFC-S §5
+metric (`per_intent_cell_metric`) + aggregator
+(`aggregate_per_intent_metrics`) returning
+`BTreeMap<String, serde_json::Value>` for Python parity, plus
+the bitfield encoder (`validation_flags_bitfield`). The new
+typed `DriverProfileSummary` struct is the return of
+`validate_driver_profile` — every field present (no Optionals),
+`per_intent` block stays dict-shaped per Python's wire format.
+The n=0 short-shape divergence (`{"intent": "...", "n_cells": 0}`
+with no aggregates) is preserved verbatim. **operations.rs**
+gains the raw `validate_driver_profile(field, &[ReferenceDatasetEntry],
+canonical_search_grid, IntentId, gamut)` plus the eight
+`*_wrapped` operations (`apply_translation_wrapped`,
+`forward_sweep_invert_wrapped`, `tau_obs_sweep_wrapped`,
+`regime_at_wrapped`, `gamut_classify_wrapped`,
+`intent_map_wrapped`, `intent_compose_wrapped`,
+`validate_driver_profile_wrapped`). Sidecar dispatch is opt-in
+via `Option<&InverseLookupSidecar>` on the three wrapped ops
+where it's meaningful, matching Python; the remaining five
+wrapped variants take no sidecar parameter. `intent_compose_wrapped`
+propagates `Result<OperationOutput<...>, OperationError>` so
+empty-intents and I2-in-composition surface as compile-visible
+errors. **`make_provenance` API choice:** explicit positional
+args (operation + dispatch_path + table_version + notes) rather
+than a builder or opts struct — matches the existing
+`operations.rs` verbose-explicit style; callers pass defaults
+like `make_provenance("regime_at", DispatchPath::DirectCompute, None, vec![])`
+verbatim. **Two new bit-identity fixtures:** (1) `provenance_hash`
+in `jax_core_reference.json` (12 cases covering every
+`DispatchPath` + null vs non-null `table_version`) +
+`provenance_hash_python_to_rust_parity` in `bit_identity.rs` —
+exact-bit equality on the rational hash; required enabling
+`serde_json/float_roundtrip` because the default lazy parser was
+1 ULP off Python's `json.loads` on one of the 12 hashes (no
+tolerance budget for a rational hash). (2) `operation_output_regime_at`
+(4 cases) + `operation_output_regime_at_python_to_rust_parity`
+— the representative wrapped-variant wire parity. **Asymmetric-
+parity is documented design** for OperationOutput JSON
+emission: timestamps are excluded (non-deterministic across
+process-start epochs) and note strings are excluded (Python's
+`f"{0.0}"` is `"0.0"` but Rust's `format!("{}", 0.0)` is `"0"`
+— a float-format divergence in the diagnostic text; the
+structured ValidationReport flags are bit/string-exact). Notes
+are diagnostic; flags are load-bearing. **167/167 Rust tests
+pass** (108 src unit — was 57, +30 validation + 8 provenance +
+13 wrapped-variant; +24 bit-identity — was 22, +1
+provenance_hash + 1 operation_output_regime_at + 17 math + 18
+types_smoke); Python 392/392 still green; WASM build still
+clean. New deps: `blake2 = "0.10"` (default-features off) for
+the blake2b-32 digest, and `serde_json` gains the
+`float_roundtrip` feature (~50 KB to wasm; load-bearing for the
+hash parity).
+
 
 ## What does NOT live here
 
@@ -656,6 +732,59 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
     tests (up from 113 — the +1 is the parity test). Next per
     BLOCK_IN: session 7 — validation + provenance + `*_wrapped`
     variants. Details in [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
+  - *Session 7 (2026-05-16):* **Validation + provenance + the
+    eight `*_wrapped` variants** + raw `validate_driver_profile`.
+    Two new src modules: `rust/src/provenance.rs` (`make_provenance`
+    + `provenance_hash` + `SOLVER_VERSION = "5.0.0"` — tracks
+    Python's `__version__`, deliberately decoupled from Cargo's
+    crate version; `timestamp_ns` uses `OnceLock<Instant>` epoch
+    + `epoch.elapsed().as_nanos()` for monotonicity matching
+    Python's `time.monotonic_ns()`) and `rust/src/validation.rs`
+    (all 14 functions: three checkers, six per-op report builders,
+    per-intent RFC-S §5 `per_intent_cell_metric` + aggregator
+    returning `BTreeMap<String, serde_json::Value>` for Python
+    `dict[str, Any]` parity, bitfield encoder, plus a typed
+    `DriverProfileSummary` struct returned by
+    `validate_driver_profile`). `operations.rs` extends with the
+    raw `validate_driver_profile(field, &[ReferenceDatasetEntry],
+    canonical_search_grid, IntentId, gamut)` plus the eight
+    `*_wrapped` operations exactly mirroring Python's
+    `operations.py` lines 1316–1568. Sidecar dispatch is opt-in
+    via `Option<&InverseLookupSidecar>` on the three wrapped ops
+    that have it (apply_translation, forward_sweep_invert,
+    tau_obs_sweep). `intent_compose_wrapped` propagates
+    `Result<OperationOutput<...>, OperationError>` so empty-intents
+    and I2-in-composition stay compile-visible. **`make_provenance`
+    API shape**: explicit positional args (no kwargs / no
+    builder) to match the existing `operations.rs` verbose-
+    explicit style. **Two new bit-identity fixtures** in
+    `jax_core_reference.json` + tests in `bit_identity.rs`:
+    (1) `provenance_hash` (12 cases, every `DispatchPath` variant
+    + null vs non-null `table_version`) — exact-bit f64 equality
+    on the rational `n / 2^32` hash; required enabling
+    `serde_json/float_roundtrip` because the default lazy float
+    parser was 1 ULP off Python's `json.loads` on one of the 12
+    hashes (rational hash → no tolerance budget). (2)
+    `operation_output_regime_at` (4 cases) — the representative
+    wrapped-variant wire parity for `OperationOutput<RegimeReading>`.
+    **Asymmetric-parity is documented design** for OperationOutput
+    JSON: timestamps excluded (non-deterministic across process-
+    start epochs); note strings excluded (Python `f"{0.0}"` is
+    `"0.0"`, Rust `format!("{}", 0.0)` is `"0"` — diagnostic-text
+    divergence). Structured ValidationReport flags +
+    Provenance.{solver_version, operation, dispatch_path,
+    table_version} are bit/string-exact. **167/167 Rust tests
+    pass** (108 src unit — was 57, +30 validation + 8 provenance
+    + 13 wrapped-variant; +24 bit-identity — was 22, +1
+    provenance_hash + 1 operation_output_regime_at + 17 math + 18
+    types_smoke); Python 392/392 still green; `cargo build
+    --release --target wasm32-unknown-unknown` still clean. New
+    deps: `blake2 = "0.10"` (default-features off) for the
+    blake2b-32 digest, and `serde_json` gains the `float_roundtrip`
+    feature (~50 KB to wasm output; load-bearing for the hash
+    parity). Next per BLOCK_IN: session 8 — `forward_sweep_invert_posterior`
+    + `_wrapped` (the session-7-proven wrapped-variant pattern is
+    the template). Details in [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
 
 Each is its own session, sequenced by the user via
 `mpa-conform/docs/ROADMAP.md`.

@@ -3653,5 +3653,209 @@
         }
       }
     }
+  ],
+  "provenance_hash": [
+    {
+      "inputs": {
+        "operation": "apply_translation",
+        "dispatch_path": "direct_compute",
+        "table_version": null
+      },
+      "output": 0.4552940079011023
+    },
+    {
+      "inputs": {
+        "operation": "apply_translation",
+        "dispatch_path": "table_hit",
+        "table_version": "banach-1.0.0"
+      },
+      "output": 0.012175544397905469
+    },
+    {
+      "inputs": {
+        "operation": "apply_translation",
+        "dispatch_path": "compute_fallback",
+        "table_version": "banach-1.0.0"
+      },
+      "output": 0.15861811465583742
+    },
+    {
+      "inputs": {
+        "operation": "forward_sweep_invert",
+        "dispatch_path": "direct_compute",
+        "table_version": null
+      },
+      "output": 0.00013786531053483486
+    },
+    {
+      "inputs": {
+        "operation": "forward_sweep_invert",
+        "dispatch_path": "table_hit",
+        "table_version": "sidecar-v2-A"
+      },
+      "output": 0.9602385004982352
+    },
+    {
+      "inputs": {
+        "operation": "tau_obs_sweep",
+        "dispatch_path": "direct_compute",
+        "table_version": null
+      },
+      "output": 0.9200318318326026
+    },
+    {
+      "inputs": {
+        "operation": "regime_at",
+        "dispatch_path": "direct_compute",
+        "table_version": null
+      },
+      "output": 0.8480549629312009
+    },
+    {
+      "inputs": {
+        "operation": "gamut_classify",
+        "dispatch_path": "direct_compute",
+        "table_version": null
+      },
+      "output": 0.8017631736584008
+    },
+    {
+      "inputs": {
+        "operation": "intent_map",
+        "dispatch_path": "direct_compute",
+        "table_version": null
+      },
+      "output": 0.6368475770577788
+    },
+    {
+      "inputs": {
+        "operation": "intent_compose",
+        "dispatch_path": "direct_compute",
+        "table_version": null
+      },
+      "output": 0.6893949494697154
+    },
+    {
+      "inputs": {
+        "operation": "validate_driver_profile",
+        "dispatch_path": "direct_compute",
+        "table_version": null
+      },
+      "output": 0.7280079305637628
+    },
+    {
+      "inputs": {
+        "operation": "apply_translation",
+        "dispatch_path": "table_hit",
+        "table_version": "banach-2.0.0"
+      },
+      "output": 0.07294871914200485
+    }
+  ],
+  "operation_output_regime_at": [
+    {
+      "label": "c_near_s clean",
+      "inputs": {
+        "chit": 0.5,
+        "gamma_AB": -0.2,
+        "k_frust": false,
+        "tau_obs": 1.0
+      },
+      "output": {
+        "value": {
+          "regime": "c_near_s",
+          "k_frust": false
+        },
+        "validation": {
+          "asymptotic_closure_compliant": true,
+          "k_frust_invariant": true,
+          "round_trip_residual": null
+        },
+        "provenance": {
+          "solver_version": "5.0.0",
+          "operation": "regime_at",
+          "dispatch_path": "direct_compute",
+          "table_version": null
+        }
+      }
+    },
+    {
+      "label": "deep_c with k_frust",
+      "inputs": {
+        "chit": 0.95,
+        "gamma_AB": 0.1,
+        "k_frust": true,
+        "tau_obs": 1.0
+      },
+      "output": {
+        "value": {
+          "regime": "deep_c",
+          "k_frust": true
+        },
+        "validation": {
+          "asymptotic_closure_compliant": true,
+          "k_frust_invariant": true,
+          "round_trip_residual": null
+        },
+        "provenance": {
+          "solver_version": "5.0.0",
+          "operation": "regime_at",
+          "dispatch_path": "direct_compute",
+          "table_version": null
+        }
+      }
+    },
+    {
+      "label": "s_critical region",
+      "inputs": {
+        "chit": -0.4,
+        "gamma_AB": 0.3,
+        "k_frust": false,
+        "tau_obs": 1.0
+      },
+      "output": {
+        "value": {
+          "regime": "r_near_s",
+          "k_frust": false
+        },
+        "validation": {
+          "asymptotic_closure_compliant": true,
+          "k_frust_invariant": true,
+          "round_trip_residual": null
+        },
+        "provenance": {
+          "solver_version": "5.0.0",
+          "operation": "regime_at",
+          "dispatch_path": "direct_compute",
+          "table_version": null
+        }
+      }
+    },
+    {
+      "label": "deep_r",
+      "inputs": {
+        "chit": -0.8,
+        "gamma_AB": 0.0,
+        "k_frust": false,
+        "tau_obs": 1.0
+      },
+      "output": {
+        "value": {
+          "regime": "deep_r",
+          "k_frust": false
+        },
+        "validation": {
+          "asymptotic_closure_compliant": false,
+          "k_frust_invariant": true,
+          "round_trip_residual": null
+        },
+        "provenance": {
+          "solver_version": "5.0.0",
+          "operation": "regime_at",
+          "dispatch_path": "direct_compute",
+          "table_version": null
+        }
+      }
+    }
   ]
 }
