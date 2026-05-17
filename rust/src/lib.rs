@@ -10,8 +10,10 @@
 //!   gfdr_model.py      → gfdr_model.rs  (session 4)
 //!   sidecar.py         → sidecar.rs     (session 4)
 //!   flow.py            → flow.rs        (session 4)
-//!   operations.py      → operations.rs  (session 4: raw forward path only;
-//!                                        gradient / wrapped / intent /
+//!   operations.py      → operations.rs  (session 4: raw forward path;
+//!                                        session 5: gradient inversion
+//!                                        dispatcher; session 6: intent
+//!                                        algebra; wrapped variants +
 //!                                        posterior land in subsequent
 //!                                        sessions per BLOCK_IN §v6)
 //!   sensitivity.py     → sensitivity.rs (future session)

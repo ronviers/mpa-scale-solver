@@ -292,6 +292,59 @@ recovery set defers to the session that ports `cross_substrate.py`
 / `active_learning.py` (they instantiate learned fields with
 materialized weights).
 
+types.rs + operations.rs intent algebra (session 6): the
+`intent_map` / `intent_compose` surface from Python's
+`operations.py` lands as RFC-S §3 cut d. New `types.rs` public
+types: `IntentId` enum (`I1`..`I5`, typed instead of stringly so
+"unknown intent" runtime errors become compile-time impossibilities),
+`CapacityClass` enum (`Deep`/`Shallow` with lowercase serde),
+`SacrificeRecord` struct, and `IntentDiagnostics` tagged enum.
+The combined `#[serde(flatten)] + #[serde(tag = "intent")]` shape
+makes the JSON wire format a flat dict matching Python's `sac`
+output shape exactly — the three common fields
+(`invariant_preserved`, `delta_chit`, `delta_gamma_AB`) on the outer
+struct, intent-specific fields typed per-variant. `intent` and
+`preserved_invariant` strings are derived methods on
+`SacrificeRecord` (not stored) since they're statically determined
+by the variant; the BLOCK_IN-prep rationale held — if cross-language
+JSON parity at the session-7 wrapped-variant boundary needs the
+`preserved_invariant` string in the wire format, wire a custom
+serializer there. `operations.rs` adds the public `intent_map`
+(takes `IntentId` directly) and `intent_compose` (takes `&[IntentId]`,
+returns `Result<(CanonicalState, Vec<SacrificeRecord>), OperationError>`)
+plus the five `intent_iN` private handlers and helpers (`sign_i`,
+`capacity_class`, `clamp_to_gamut`, `regime_chit_interval`,
+`nearest_in_gamut_chit_for_regime`, `sign_preserving_clamp`).
+Python's `_REGIME_CHIT_INTERVALS` dict becomes a function with a
+`match RegimeLabel` body (typed lookup; same intervals). I3's deep→
+shallow recovery branch (try-the-same-side-endpoint logic) ports
+verbatim. Two new errors: `OperationError::IntentComposeEmpty`
+(Python's `"requires at least one intent"`) and `I2InComposition`
+(Python's `"does not compose"` for I2 alongside other intents).
+**114/114 Rust tests** green (57 src unit including 26 new intent
+tests + 22 bit-identity including 1 new sacrifice-record parity
+test + 17 analytic math + 18 types smoke); Python 392/392 still
+green; WASM build still clean. No new bit-identity *math* fixtures
+— session 6 is pure arithmetic. One new schema-parity fixture:
+`sacrifice_record` (13 cases, all 5 intents + edge cases) in
+`jax_core_reference.json`; new
+`sacrifice_record_python_to_rust_json_parity` test in
+`bit_identity.rs` asserts Python's `sac` dict deserializes
+field-by-field into Rust `SacrificeRecord`. **Asymmetric-parity
+is documented design** (added at session-6 end after the parity
+test proved the shape works): Python's stored
+`preserved_invariant` STRING is silently dropped on Python→Rust
+read (serde default); Rust's `.preserved_invariant()` reconstructs
+it byte-for-byte from the variant — the test asserts the
+reconstructed string equals Python's, so symmetric round-trip is a
+one-line custom Serialize away if a future consumer ever needs it
+(none does as of session 6 — Python is the producer in the
+wrapped-variant path). `test_intents.py`'s TestValidation (3 tests
+exercising `intent_map_wrapped` / `intent_compose_wrapped`)
+deferred to session 7 alongside `validation.rs` + `provenance.rs`
++ the `*_wrapped` variants — same deferral pattern session 5
+used for wrapped-variant gradient tests.
+
 
 ## What does NOT live here
 
@@ -567,6 +620,42 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
     with validation + provenance. Next per BLOCK_IN: session 6 —
     intent algebra. Details in
     [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
+  - *Session 6 (2026-05-16):* Intent algebra port — `intent_map` +
+    `intent_compose` + the five `_intent_iN` handlers + helpers from
+    Python's `operations.py`. Four new `types.rs` public additions:
+    `IntentId` enum (`I1`..`I5` — typed, not stringly; "unknown intent"
+    is a compile-time impossibility), `CapacityClass` enum
+    (`Deep`/`Shallow`), `SacrificeRecord` struct, and
+    `IntentDiagnostics` tagged enum. The
+    `#[serde(flatten)] + #[serde(tag = "intent")]` combination makes
+    the JSON wire format a single flat dict matching Python's `sac`
+    output shape verbatim. `intent` and `preserved_invariant` are
+    derived methods on `SacrificeRecord` (statically determined by the
+    variant); the BLOCK_IN-prep shape held end-to-end. Two new errors:
+    `OperationError::IntentComposeEmpty` and `I2InComposition` (mirror
+    Python's two ValueErrors). All helpers (`sign_i`,
+    `capacity_class`, `clamp_to_gamut`, `regime_chit_interval`,
+    `nearest_in_gamut_chit_for_regime`, `sign_preserving_clamp`) port
+    1:1; Python's `_REGIME_CHIT_INTERVALS` dict becomes a function
+    with a `match RegimeLabel` body. I3's deep→shallow recovery branch
+    ports verbatim. **113/113 Rust tests pass** (57 src unit
+    including 26 new intent tests + 21 bit-identity + 17 math + 18
+    types_smoke); Python 392/392 still green; WASM build still clean.
+    No new bit-identity fixtures — session 6 is pure arithmetic, no
+    math primitives added (BLOCK_IN-prep prediction confirmed).
+    `test_intents.py`'s TestValidation (3 tests against
+    `*_wrapped`) deferred to session 7 alongside validation +
+    provenance (same wrapped-variant deferral pattern as session 5).
+    Cross-language JSON parity for `SacrificeRecord` flat-dict
+    landed in-session via the `sacrifice_record` fixture entry
+    + `sacrifice_record_python_to_rust_json_parity` test (5
+    intents, 13 cases). The asymmetric-by-design `preserved_invariant`
+    handling (Python stores, Rust drops on read + reconstructs via
+    derived method) is documented and proven; symmetric round-trip
+    would be a one-line custom `Serialize`. Total: **114/114** Rust
+    tests (up from 113 — the +1 is the parity test). Next per
+    BLOCK_IN: session 7 — validation + provenance + `*_wrapped`
+    variants. Details in [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
 
 Each is its own session, sequenced by the user via
 `mpa-conform/docs/ROADMAP.md`.

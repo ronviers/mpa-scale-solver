@@ -44,8 +44,9 @@ use mpa_scale_solver::math::{
 };
 use mpa_scale_solver::sidecar::round_key;
 use mpa_scale_solver::types::{
-    CanonicalPoint, CanonicalState, Direction, Gt, OperatingPoint, RegimeLabel, ScalingRule,
-    TangentFlowField, TranslationField, TranslationRule,
+    CanonicalPoint, CanonicalState, CapacityClass, Direction, Gt, IntentDiagnostics, IntentId,
+    OperatingPoint, RegimeLabel, SacrificeRecord, ScalingRule, TangentFlowField, TranslationField,
+    TranslationRule,
 };
 use serde_json::Value;
 
@@ -164,6 +165,10 @@ fn fixture_covers_all_expected_primitives() {
         "sidecar_round_key",
         // session 4 — flow.py → flow.rs (1)
         "flow",
+        // session 6 — intent algebra (operations.py → operations.rs).
+        // Schema parity, not bit-identity — see the dedicated test
+        // below for the Python→Rust JSON parity contract.
+        "sacrifice_record",
     ];
     assert_eq!(
         obj.len(),
@@ -838,6 +843,298 @@ fn flow_matches_python_across_dispatch() {
             f(&case["outputs"]["gamma_AB"]),
             budget,
             &format!("flow[{i}].gamma_AB"),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Session 6 — intent algebra Python→Rust JSON parity
+// ---------------------------------------------------------------------------
+//
+// Not bit-identity (intent_map is pure arithmetic dispatch, no libm) —
+// this is a *schema parity* contract. Python is the sacrifice producer
+// in the wrapped-variant path (session 7); the test asserts that
+// Python-emitted sacrifice JSON deserializes cleanly into the Rust
+// `SacrificeRecord` flat-dict shape and reproduces every field.
+//
+// Asymmetric parity by design: Python's sac dict contains a stored
+// `preserved_invariant` STRING key. Rust's `SacrificeRecord` exposes
+// the same string via a derived `.preserved_invariant()` method (no
+// stored field) — the string is statically determined by the
+// `IntentDiagnostics` variant per the BLOCK_IN-prep rationale. serde
+// silently drops the unknown field on Python→Rust read. Rust→Python
+// round-trip would lose the key; if a future consumer ever needs
+// symmetric round-trip, add a custom Serialize on SacrificeRecord
+// emitting `preserved_invariant` from the derived method (the BLOCK_IN
+// note flags this option). The test asserts the asymmetric path
+// works AND that the derived `.preserved_invariant()` matches Python's
+// emitted string byte-for-byte, so symmetric parity is a one-line
+// serializer away should it ever be needed.
+
+fn parse_intent_id(s: &str) -> IntentId {
+    match s {
+        "I1" => IntentId::I1,
+        "I2" => IntentId::I2,
+        "I3" => IntentId::I3,
+        "I4" => IntentId::I4,
+        "I5" => IntentId::I5,
+        other => panic!("unknown intent id in fixture: {other}"),
+    }
+}
+
+#[test]
+fn sacrifice_record_python_to_rust_json_parity() {
+    let fixture = load_fixture();
+    let cases = fixture["sacrifice_record"]
+        .as_array()
+        .expect("sacrifice_record array");
+    assert!(!cases.is_empty(), "sacrifice_record fixture must be non-empty");
+    let mut intents_seen = std::collections::HashSet::new();
+
+    for (i, case) in cases.iter().enumerate() {
+        let label = format!("sacrifice_record[{i}]");
+        let inputs = &case["inputs"];
+        let outputs = &case["outputs"];
+        let sac_json = &outputs["sacrifice"];
+        let mapped_json = &outputs["mapped"];
+
+        // --- Deserialize: Python's sac dict → Rust SacrificeRecord.
+        let rust_sac: SacrificeRecord = serde_json::from_value(sac_json.clone())
+            .unwrap_or_else(|e| {
+                panic!("{label}: SacrificeRecord deserialize failed: {e}\njson: {sac_json}")
+            });
+
+        // --- Deserialize: Python's mapped state → Rust CanonicalState
+        // (smoke check that CanonicalState shape matches at the same
+        // boundary; the mapped state rides alongside the sacrifice).
+        let rust_mapped: CanonicalState = serde_json::from_value(mapped_json.clone())
+            .unwrap_or_else(|e| {
+                panic!("{label}: CanonicalState deserialize failed: {e}\njson: {mapped_json}")
+            });
+        let expected_chit = f(&mapped_json["chit"]);
+        let expected_gamma = f(&mapped_json["gamma_AB"]);
+        assert_eq!(rust_mapped.chit, expected_chit, "{label}: mapped.chit");
+        assert_eq!(rust_mapped.gamma_AB, expected_gamma, "{label}: mapped.gamma_AB");
+        assert_eq!(
+            rust_mapped.k_frust,
+            mapped_json["k_frust"].as_bool().expect("k_frust bool"),
+            "{label}: mapped.k_frust",
+        );
+
+        // --- Common-field parity (outer SacrificeRecord struct).
+        let expected_invariant = sac_json["invariant_preserved"]
+            .as_bool()
+            .expect("invariant_preserved bool");
+        assert_eq!(
+            rust_sac.invariant_preserved, expected_invariant,
+            "{label}: invariant_preserved",
+        );
+        assert_eq!(
+            rust_sac.delta_chit, f(&sac_json["delta_chit"]),
+            "{label}: delta_chit",
+        );
+        assert_eq!(
+            rust_sac.delta_gamma_AB, f(&sac_json["delta_gamma_AB"]),
+            "{label}: delta_gamma_AB",
+        );
+
+        // --- Derived methods match Python's stored strings.
+        let expected_intent = parse_intent_id(
+            sac_json["intent"].as_str().expect("intent string"),
+        );
+        assert_eq!(rust_sac.intent(), expected_intent, "{label}: intent()");
+
+        let expected_preserved = sac_json["preserved_invariant"]
+            .as_str()
+            .expect("preserved_invariant string");
+        assert_eq!(
+            rust_sac.preserved_invariant(), expected_preserved,
+            "{label}: preserved_invariant() derived string",
+        );
+
+        // --- Cross-check with the original (state, gamut, intent) inputs.
+        // The fixture inputs document the test case; the intent_id field
+        // must agree with the sac's intent tag (sanity).
+        let intent_input = parse_intent_id(
+            inputs["intent_id"].as_str().expect("intent_id string"),
+        );
+        assert_eq!(
+            rust_sac.intent(), intent_input,
+            "{label}: sac.intent() must match inputs.intent_id",
+        );
+        intents_seen.insert(intent_input);
+
+        // --- Per-intent diagnostic parity.
+        match (&rust_sac.diagnostics, expected_intent) {
+            (
+                IntentDiagnostics::I1 {
+                    regime_preserved,
+                    gamma_AB_sign_preserved,
+                    k_frust_preserved,
+                    original_regime,
+                    mapped_regime,
+                    original_gamma_AB_sign,
+                    mapped_gamma_AB_sign,
+                },
+                IntentId::I1,
+            ) => {
+                assert_eq!(
+                    *regime_preserved,
+                    sac_json["regime_preserved"].as_bool().expect("bool"),
+                    "{label}: I1.regime_preserved",
+                );
+                assert_eq!(
+                    *gamma_AB_sign_preserved,
+                    sac_json["gamma_AB_sign_preserved"].as_bool().expect("bool"),
+                    "{label}: I1.gamma_AB_sign_preserved",
+                );
+                assert_eq!(
+                    *k_frust_preserved,
+                    sac_json["k_frust_preserved"].as_bool().expect("bool"),
+                    "{label}: I1.k_frust_preserved",
+                );
+                let py_orig = sac_json["original_regime"].as_str().expect("regime str");
+                let py_mapped = sac_json["mapped_regime"].as_str().expect("regime str");
+                assert_eq!(
+                    serde_json::to_string(original_regime).unwrap(),
+                    format!("\"{py_orig}\""),
+                    "{label}: I1.original_regime",
+                );
+                assert_eq!(
+                    serde_json::to_string(mapped_regime).unwrap(),
+                    format!("\"{py_mapped}\""),
+                    "{label}: I1.mapped_regime",
+                );
+                assert_eq!(
+                    *original_gamma_AB_sign as i64,
+                    sac_json["original_gamma_AB_sign"].as_i64().expect("i64"),
+                    "{label}: I1.original_gamma_AB_sign",
+                );
+                assert_eq!(
+                    *mapped_gamma_AB_sign as i64,
+                    sac_json["mapped_gamma_AB_sign"].as_i64().expect("i64"),
+                    "{label}: I1.mapped_gamma_AB_sign",
+                );
+            }
+            (
+                IntentDiagnostics::I2 {
+                    out_of_gamut_rejected,
+                    out_of_gamut_axes,
+                },
+                IntentId::I2,
+            ) => {
+                assert_eq!(
+                    *out_of_gamut_rejected,
+                    sac_json["out_of_gamut_rejected"].as_bool().expect("bool"),
+                    "{label}: I2.out_of_gamut_rejected",
+                );
+                let py_axes: Vec<&str> = sac_json["out_of_gamut_axes"]
+                    .as_array()
+                    .expect("axes array")
+                    .iter()
+                    .map(|v| v.as_str().expect("axis str"))
+                    .collect();
+                assert_eq!(
+                    out_of_gamut_axes.len(),
+                    py_axes.len(),
+                    "{label}: I2.out_of_gamut_axes length",
+                );
+                for (a, b) in out_of_gamut_axes.iter().zip(py_axes.iter()) {
+                    assert_eq!(a, b, "{label}: I2.out_of_gamut_axes element");
+                }
+            }
+            (
+                IntentDiagnostics::I3 {
+                    capacity_class,
+                    mapped_capacity_class,
+                    k_frust,
+                    k_frust_preserved,
+                },
+                IntentId::I3,
+            ) => {
+                let py_cap = sac_json["capacity_class"].as_str().expect("cap str");
+                let py_mcap = sac_json["mapped_capacity_class"].as_str().expect("cap str");
+                let expected_cap = match py_cap {
+                    "deep" => CapacityClass::Deep,
+                    "shallow" => CapacityClass::Shallow,
+                    other => panic!("{label}: unknown capacity_class: {other}"),
+                };
+                let expected_mcap = match py_mcap {
+                    "deep" => CapacityClass::Deep,
+                    "shallow" => CapacityClass::Shallow,
+                    other => panic!("{label}: unknown mapped_capacity_class: {other}"),
+                };
+                assert_eq!(*capacity_class, expected_cap, "{label}: I3.capacity_class");
+                assert_eq!(
+                    *mapped_capacity_class, expected_mcap,
+                    "{label}: I3.mapped_capacity_class",
+                );
+                assert_eq!(
+                    *k_frust,
+                    sac_json["k_frust"].as_bool().expect("bool"),
+                    "{label}: I3.k_frust",
+                );
+                assert_eq!(
+                    *k_frust_preserved,
+                    sac_json["k_frust_preserved"].as_bool().expect("bool"),
+                    "{label}: I3.k_frust_preserved",
+                );
+            }
+            (
+                IntentDiagnostics::I4 {
+                    original_gamma_AB_sign,
+                    mapped_gamma_AB_sign,
+                },
+                IntentId::I4,
+            ) => {
+                assert_eq!(
+                    *original_gamma_AB_sign as i64,
+                    sac_json["original_gamma_AB_sign"].as_i64().expect("i64"),
+                    "{label}: I4.original_gamma_AB_sign",
+                );
+                assert_eq!(
+                    *mapped_gamma_AB_sign as i64,
+                    sac_json["mapped_gamma_AB_sign"].as_i64().expect("i64"),
+                    "{label}: I4.mapped_gamma_AB_sign",
+                );
+            }
+            (
+                IntentDiagnostics::I5 {
+                    regime_preserved,
+                    original_regime,
+                    mapped_regime,
+                },
+                IntentId::I5,
+            ) => {
+                assert_eq!(
+                    *regime_preserved,
+                    sac_json["regime_preserved"].as_bool().expect("bool"),
+                    "{label}: I5.regime_preserved",
+                );
+                let py_orig = sac_json["original_regime"].as_str().expect("regime str");
+                let py_mapped = sac_json["mapped_regime"].as_str().expect("regime str");
+                assert_eq!(
+                    serde_json::to_string(original_regime).unwrap(),
+                    format!("\"{py_orig}\""),
+                    "{label}: I5.original_regime",
+                );
+                assert_eq!(
+                    serde_json::to_string(mapped_regime).unwrap(),
+                    format!("\"{py_mapped}\""),
+                    "{label}: I5.mapped_regime",
+                );
+            }
+            (variant, expected) => panic!(
+                "{label}: variant/intent mismatch — Rust variant {variant:?}, expected {expected:?}",
+            ),
+        }
+    }
+
+    // Coverage: every intent should be exercised at least once.
+    for required in [IntentId::I1, IntentId::I2, IntentId::I3, IntentId::I4, IntentId::I5] {
+        assert!(
+            intents_seen.contains(&required),
+            "sacrifice_record fixture missing case for {required:?}",
         );
     }
 }

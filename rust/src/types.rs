@@ -84,6 +84,29 @@ pub enum DispatchPath {
     DirectCompute,
 }
 
+/// One of the five RFC-S §3 mapping intents accepted by `intent_map`
+/// and `intent_compose`. Typed rather than stringly — Python's
+/// `intent_id: str` produces an "unknown intent" ValueError at runtime;
+/// the Rust port pushes that check into the type system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum IntentId {
+    I1,
+    I2,
+    I3,
+    I4,
+    I5,
+}
+
+/// Capacity bucket used by I3 (capacity-preserving intent). `Deep` is
+/// `|chit| >= 0.7` — the framework's fixed-point-stability boundary
+/// (`gfdr_model::vertex_regime`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CapacityClass {
+    Deep,
+    Shallow,
+}
+
 // ---------------------------------------------------------------------------
 // Runtime working states (§A.3)
 // ---------------------------------------------------------------------------
@@ -384,6 +407,97 @@ impl<'de> Deserialize<'de> for SidecarKey {
         let c = parts[2].parse::<u64>().map_err(serde::de::Error::custom)?;
         Ok(SidecarKey([a, b, c]))
     }
+}
+
+// ---------------------------------------------------------------------------
+// v2.3: intent algebra — sacrifice records
+// ---------------------------------------------------------------------------
+
+/// Per-state sacrifice record emitted by `intent_map`. Three fields
+/// are common to every intent (the outer struct); intent-specific
+/// diagnostics ride in the `diagnostics` enum, flattened so the JSON
+/// wire format is a single flat dict matching Python's `sac` shape.
+///
+/// `intent` and `preserved_invariant` are derived (not stored) — both
+/// are statically determined by the handler that built the record.
+/// Use the `intent()` and `preserved_invariant()` methods to read them.
+/// If cross-language JSON parity ever needs the `preserved_invariant`
+/// string in the serialized form (it lives in Python's sac dict), wire
+/// a custom serializer at that boundary; the in-memory shape stays
+/// minimal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SacrificeRecord {
+    pub invariant_preserved: bool,
+    pub delta_chit: f64,
+    pub delta_gamma_AB: f64,
+    #[serde(flatten)]
+    pub diagnostics: IntentDiagnostics,
+}
+
+impl SacrificeRecord {
+    /// Which intent emitted this record (statically determined by the
+    /// `diagnostics` variant).
+    pub fn intent(&self) -> IntentId {
+        match self.diagnostics {
+            IntentDiagnostics::I1 { .. } => IntentId::I1,
+            IntentDiagnostics::I2 { .. } => IntentId::I2,
+            IntentDiagnostics::I3 { .. } => IntentId::I3,
+            IntentDiagnostics::I4 { .. } => IntentId::I4,
+            IntentDiagnostics::I5 { .. } => IntentId::I5,
+        }
+    }
+
+    /// Per-intent preserved-invariant string. Matches Python's
+    /// `sac["preserved_invariant"]` value verbatim (including the
+    /// Unicode `∧` in I1 / I3).
+    pub fn preserved_invariant(&self) -> &'static str {
+        match self.diagnostics {
+            IntentDiagnostics::I1 { .. } => "regime ∧ sign(gamma_AB) ∧ k_frust",
+            IntentDiagnostics::I2 { .. } => "exact_drive_parameters",
+            IntentDiagnostics::I3 { .. } => "capacity_class ∧ k_frust",
+            IntentDiagnostics::I4 { .. } => "sign(gamma_AB)",
+            IntentDiagnostics::I5 { .. } => "regime_label",
+        }
+    }
+}
+
+/// Intent-specific diagnostic fields. Tagged by `intent` so the JSON
+/// is a single flat dict (combined with `SacrificeRecord`'s
+/// `#[serde(flatten)]`). For I5 the v0/v1 keys (`regime_preserved`,
+/// `original_regime`, `mapped_regime`) are preserved verbatim — the
+/// uniform v2.3 keys (`preserved_invariant`, `invariant_preserved`) are
+/// the outer struct + the derived method.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "intent")]
+pub enum IntentDiagnostics {
+    I1 {
+        regime_preserved: bool,
+        gamma_AB_sign_preserved: bool,
+        k_frust_preserved: bool,
+        original_regime: RegimeLabel,
+        mapped_regime: RegimeLabel,
+        original_gamma_AB_sign: i32,
+        mapped_gamma_AB_sign: i32,
+    },
+    I2 {
+        out_of_gamut_rejected: bool,
+        out_of_gamut_axes: Vec<String>,
+    },
+    I3 {
+        capacity_class: CapacityClass,
+        mapped_capacity_class: CapacityClass,
+        k_frust: bool,
+        k_frust_preserved: bool,
+    },
+    I4 {
+        original_gamma_AB_sign: i32,
+        mapped_gamma_AB_sign: i32,
+    },
+    I5 {
+        regime_preserved: bool,
+        original_regime: RegimeLabel,
+        mapped_regime: RegimeLabel,
+    },
 }
 
 /// Curator-precomputed inverse-lookup table. Sidecar production lives in

@@ -54,7 +54,7 @@ always — refine in place).
 |---|---|---|
 | v1–v5 | Foundation, JAX, Bayesian, intents, Caputo, cross-substrate, active learning, MCP, LearnedField, streaming + DSL + notebook ergonomics, continuous self-test + sensitivity backprop + gradient inversion — all shipped 2026-05-16 (see README §Session Log) | — (shipped) |
 | ~~v2.2~~ | ~~N-mode generalization (cut c)~~ — cancelled 2026-05-16; tombstone retained below | — |
-| **v6** | One-shot native port (Rust + WASM). Zero new features. Per-seed reproducibility against the v5 Python. Sessions 1-5 landed 2026-05-16 (math, types, raw forward path, gradient dispatcher); sessions 6-9 remaining (intents, validation+provenance+wrapped, posterior, bindings). | v5 |
+| **v6** | One-shot native port (Rust + WASM). Zero new features. Per-seed reproducibility against the v5 Python. Sessions 1-6 landed 2026-05-16 (math, types, raw forward path, gradient dispatcher, intent algebra); sessions 7-9 remaining (validation+provenance+wrapped, posterior, bindings). | v5 |
 
 Sequencing is the user's call per ROADMAP. v6 is the only remaining
 version; the API surface and capability set are frozen as of v5.
@@ -301,6 +301,55 @@ mpa-conform's `import mpa_scale_solver` keeps working unchanged.
   types_smoke); Python 392/392 still green; `cargo build --release
   --target wasm32-unknown-unknown` still clean. No new bit-identity
   fixtures — session 5 composes existing math primitives.
+- *Session 6 (2026-05-16):* Intent algebra port — `intent_map` +
+  `intent_compose` + five `_intent_iN` handlers + helpers. New
+  `types.rs` additions: `IntentId` enum (I1–I5), `CapacityClass` enum
+  (`Deep`/`Shallow`), `SacrificeRecord` struct + `IntentDiagnostics`
+  tagged enum implementing the BLOCK_IN-prep sketch exactly: three
+  truly-common fields (`invariant_preserved`, `delta_chit`,
+  `delta_gamma_AB`) on the outer struct, intent-specific fields typed
+  per-variant, `#[serde(flatten)] + #[serde(tag = "intent")]` so the
+  JSON wire format is a flat dict matching Python's `sac`-output shape.
+  `intent` and `preserved_invariant` are derived methods (not stored)
+  per the BLOCK_IN-prep rationale — they're statically determined by
+  the variant. Two new `operations.rs` errors: `IntentComposeEmpty` +
+  `I2InComposition` mirroring Python's two ValueErrors. `intent_map`
+  takes `IntentId` directly (not a string) — Python's "unknown intent"
+  runtime error becomes a compile-time impossibility. Helpers
+  (`sign_i`, `capacity_class`, `clamp_to_gamut`,
+  `regime_chit_interval`, `nearest_in_gamut_chit_for_regime`,
+  `sign_preserving_clamp`) port 1:1 from Python's `operations.py`
+  except the regime intervals are typed (match on `RegimeLabel`) and
+  the `_REGIME_CHIT_INTERVALS` dict becomes a function. The I3 deep→
+  shallow recovery branch (try-the-same-side-endpoint logic) ports
+  verbatim. **26 new src unit tests** mirror `tests/test_intents.py`'s
+  TestI1RegimePreserving / I2 / I3 / I4 / I5 / TestComposition classes
+  (TestValidation defers to session 7 alongside wrapped variants —
+  same deferral logic as session 5's wrapped-test skip). One
+  serde-flatten round-trip smoke catches the
+  `#[serde(flatten)] + tag="intent"` combination. **113/113 Rust tests
+  pass** (57 src unit — up from 31, +26 intent — + 21 bit-identity + 17
+  math + 18 types_smoke); Python 392/392 still green; `cargo build
+  --release --target wasm32-unknown-unknown` still clean. No new
+  bit-identity fixtures — session 6 is pure arithmetic, no math
+  primitives added (predicted at BLOCK_IN-prep time; confirmed). One
+  schema-parity fixture added: `sacrifice_record` (13 cases covering
+  all 5 intents + edge cases) in `jax_core_reference.json`; new test
+  `sacrifice_record_python_to_rust_json_parity` in `bit_identity.rs`
+  deserializes each Python-emitted `sac` dict into Rust `SacrificeRecord`
+  and asserts field-by-field agreement (common fields, derived
+  `.intent()` / `.preserved_invariant()`, per-variant diagnostics).
+  **Asymmetric parity is now the documented design**: Python's stored
+  `preserved_invariant` STRING is silently dropped on Python→Rust
+  read (serde default behavior); Rust's `.preserved_invariant()`
+  reconstructs it byte-for-byte from the variant. The test asserts
+  the reconstructed string equals Python's emitted string, so
+  symmetric round-trip is a one-line custom Serialize away should
+  a future consumer ever need it (no consumer needs it as of session
+  6 — Python is the producer in the wrapped-variant path). Final
+  test totals: **114/114 Rust tests pass** (57 src unit + 22
+  bit-identity — was 21, +1 sacrifice parity + 17 math + 18
+  types_smoke); Python 392/392 still green; WASM build still clean.
 
 **Goal.** One-shot consolidation. Match the proven v5 Python under the
 per-seed reproducibility discipline. Free to parallelize aggressively
@@ -340,7 +389,13 @@ consumes).
   Open/watch L-BFGS entry below for the cross-language convergence
   defer.
 - Streaming + symbolic query + cross-substrate ops + active learning +
-  Bayesian + Caputo + full intents (I1–I5) + composition.
+  Bayesian + Caputo.
+- ~~Full intents (I1–I5) + composition.~~ Landed session 6 at
+  `rust/src/operations.rs` (`intent_map`, `intent_compose`, five
+  `intent_iN` handlers) and `rust/src/types.rs` (`IntentId`,
+  `CapacityClass`, `SacrificeRecord`, `IntentDiagnostics`). Wrapped
+  variants (`intent_map_wrapped`, `intent_compose_wrapped`) carry to
+  session 7 per the operations.py-split note in Open/watch.
 - MCP server (port via the native MCP SDK once one exists; or keep
   Python `mcp_server.py` as a thin wrapper invoking native through
   pybind11/pyo3 if no native MCP SDK is mature at v6 session time).
@@ -411,14 +466,23 @@ capability lands in v5 first via a v5.x release.
   types.rs serde round-trip is Rust-internal. Cross-language
   parity (a Python-emitted JSON for a `LearnedField` /
   `OperationOutput` / `InverseLookupSidecar` instance deserializes
-  byte-identically into Rust) is unproven and lands with whichever
-  module ports first that actually serializes the relevant type to
-  JSON — `sidecar.py` for `InverseLookupSidecar`, `mcp_server.py`
-  for `OperationOutput<T>` over the tool responses. The
-  `SidecarKey` ':'-joined-bits wire format and the `gamma_AB`
-  schema-field name preservation are the two design decisions
-  that will need to either match the future Python producer or
-  trigger a Python-side renormalize before merging.
+  byte-identically into Rust) is unproven for the remaining types
+  and lands with whichever module ports first that actually
+  serializes the relevant type to JSON — `sidecar.py` for
+  `InverseLookupSidecar`, `mcp_server.py` for `OperationOutput<T>`
+  over the tool responses. The `SidecarKey` ':'-joined-bits wire
+  format and the `gamma_AB` schema-field name preservation are the
+  two design decisions that will need to either match the future
+  Python producer or trigger a Python-side renormalize before
+  merging.
+  - ~~`SacrificeRecord` parity~~ — landed session 6 via the
+    `sacrifice_record` fixture in `jax_core_reference.json` + the
+    `sacrifice_record_python_to_rust_json_parity` test in
+    `bit_identity.rs`. Asymmetric-by-design: Python→Rust works
+    (serde drops the stored `preserved_invariant` key); Rust→Python
+    would need a custom `Serialize` (one-helper, not currently
+    needed since Python is the producer). See the session-6 log
+    bullet for full rationale.
 - **`operations.py` deferred-session split.** Session 4 landed the
   raw forward path (`apply_translation` + three dispatch helpers,
   `forward_sweep_invert_grid`, `tau_obs_sweep_grid`, `regime_at`,
@@ -433,56 +497,14 @@ capability lands in v5 first via a v5.x release.
     Gradient}` + `InversionResult`; closed-form tangent_flow path +
     hand-rolled 2D damped-Newton L-BFGS-equivalent (not `argmin` —
     see the divergence rationale in the session-5 log bullet).
-  - *Session 6 — intent algebra.* `intent_map` + `intent_compose`
-    + the five `_intent_iN` handlers + the helpers
-    (`_clamp_to_gamut`, `_nearest_in_gamut_chit_for_regime`,
-    `_capacity_class`, `_sign_preserving_clamp`). **Sacrifice-record
-    shape decided 2026-05-16** — common struct + flattened typed-enum
-    diagnostics (sanctioned at session-5-handoff time after looking
-    at the Python handler shapes):
-    ```rust
-    pub struct SacrificeRecord {
-        pub invariant_preserved: bool,
-        pub delta_chit: f64,
-        pub delta_gamma_AB: f64,
-        #[serde(flatten)]
-        pub diagnostics: IntentDiagnostics,
-    }
-    #[serde(tag = "intent")]
-    pub enum IntentDiagnostics {
-        I1 { regime_preserved, gamma_AB_sign_preserved, k_frust_preserved,
-             original_regime, mapped_regime,
-             original_gamma_AB_sign, mapped_gamma_AB_sign },
-        I2 { out_of_gamut_rejected, out_of_gamut_axes: Vec<String> },
-        I3 { capacity_class, mapped_capacity_class, k_frust, k_frust_preserved },
-        I4 { original_gamma_AB_sign, mapped_gamma_AB_sign },
-        I5 { regime_preserved, original_regime, mapped_regime },
-    }
-    impl SacrificeRecord {
-        pub fn intent(&self) -> IntentId { /* match diagnostics */ }
-        pub fn preserved_invariant(&self) -> &'static str {
-            /* per-variant static string from Python handlers */
-        }
-    }
-    ```
-    The three truly-common fields (`invariant_preserved`, `delta_chit`,
-    `delta_gamma_AB`) live on the outer struct; intent-specific
-    fields are typed per-variant; `intent` and `preserved_invariant`
-    strings are derived (not stored) since they're statically
-    determined by which handler emitted the record. `#[serde(flatten)]`
-    + `#[serde(tag = "intent")]` makes the JSON wire format a flat
-    dict matching Python's `sac` output shape (modulo the derived
-    `preserved_invariant` string — add via custom serializer if
-    cross-language JSON parity at session 7's wrapped-variant
-    boundary demands it; otherwise leave as a Rust-side method).
-    `IntentId` enum + `CapacityClass` enum (`Deep` / `Shallow`)
-    land in this session as new public types in `types.rs`. New
-    `OperationError::I2InComposition` for `intent_compose`'s RFC-S
-    §3 rule (I2 doesn't compose with other intents). No new
-    bit-identity fixtures expected — pure arithmetic, no math
-    primitives added. Tests port from `tests/test_intents.py`
-    (28 Python tests — likely 20-25 Rust equivalents since
-    Python-specific shape tests don't translate).
+  - ~~*Session 6 — intent algebra.*~~ Landed 2026-05-16 as v6.3.0 —
+    see the §v6 session log bullet. `IntentId` + `CapacityClass` +
+    `SacrificeRecord` + `IntentDiagnostics` in `types.rs`;
+    `intent_map` + `intent_compose` + the five `_intent_iN` handlers
+    + helpers in `operations.rs`; two new errors
+    (`IntentComposeEmpty`, `I2InComposition`). 26 new tests; 113/113
+    Rust total. No new bit-identity fixtures (pure arithmetic — the
+    pre-session prediction held).
   - *Session 7 — validation + provenance + wrapped variants.*
     Ports `validation.py` (492 LOC) and `provenance.py` (60 LOC),
     then the eight `*_wrapped` operations stamping
@@ -492,6 +514,31 @@ capability lands in v5 first via a v5.x release.
     bit-identity to apply. Also covers the wrapped `method` kwarg
     forwarding (session 5 deferred the wrapped test; same
     behavior, just stamps the OperationOutput).
+    **Session-6 carry-overs (mostly resolved at session-6 end —
+    flagged here for context):**
+    1. `intent_map_wrapped` + `intent_compose_wrapped` are
+       straightforward — they wrap `intent_map` / `intent_compose`
+       (session 6, public) with an `OperationOutput<T>` shell. No
+       new design questions; mostly mechanical port.
+    2. `SacrificeRecord` Python→Rust JSON parity is already proven
+       (session 6 added `sacrifice_record_python_to_rust_json_parity`
+       in `bit_identity.rs`, exercising all 5 intents + 13 cases).
+       The asymmetric-parity design (`preserved_invariant` stored
+       Python-side, derived method Rust-side, dropped on read) is
+       documented; if session 7's `OperationOutput<T>` boundary
+       demands symmetric round-trip, add a custom `Serialize` on
+       `SacrificeRecord` emitting `preserved_invariant` from
+       `self.preserved_invariant()` (one helper, ~6 lines).
+    3. `report_for_intent_compose` Python helper aggregates
+       per-intent `invariant_preserved` into `k_frust_invariant`
+       on the wrapped `ValidationReport` — a one-line
+       `.iter().all()` in Rust; no new optimization.
+    The unresolved session-7-original work remains: the
+    `OperationOutput<T>` wire-format parity (Python emits via
+    `dataclasses.asdict` / `json.dumps`; Rust's serde derive needs
+    to produce field-compatible JSON — likely a new fixture
+    section + parity test pattern mirroring the session-6
+    sacrifice_record approach).
   - *Session 8 — posterior.* `forward_sweep_invert_posterior` +
     `_wrapped`. Depends on the Laplace primitives already in
     `math.rs`; the wrapper builds a `Posterior` from a posterior

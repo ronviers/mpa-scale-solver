@@ -20,9 +20,17 @@
 //!       non-byte-identity vs scipy's L-BFGS-B; see optim.rs for
 //!       rationale on the deviation from the BLOCK_IN-noted `argmin`
 //!       candidate).
+//!   * Session 6 — intent algebra (RFC-S §3 cut d):
+//!     - `intent_map(state, tau_obs, gamut, IntentId)` and the five
+//!       private `intent_iN` handlers + helpers.
+//!     - `intent_compose(state, tau_obs, gamut, &[IntentId])` enforcing
+//!       the I2-doesn't-compose rule (Python's `ValueError` ports as
+//!       `OperationError::I2InComposition`).
+//!     - `SacrificeRecord` + `IntentDiagnostics` (flat-dict JSON shape
+//!       matching Python's `sac` output via
+//!       `#[serde(flatten)] + #[serde(tag = "intent")]`).
 //!
 //! Deferred to subsequent sessions (named in BLOCK_IN §v6):
-//!   * `intent_map`, `intent_compose`, the five intent handlers (session 6)
 //!   * `validate_driver_profile` + the `*_wrapped` variants (session 7)
 //!   * `forward_sweep_invert_posterior` (session 8)
 //!
@@ -43,8 +51,9 @@ use crate::math::{
 };
 use crate::optim::minimize_smooth_2d;
 use crate::types::{
-    CanonicalState, DisplayBand, GamutSpec, LearnedField, LookupTableField, RegimeLabel,
-    RegimeReading, SubstrateState, TangentFlowField, TranslationField, TranslationRule,
+    CanonicalState, CapacityClass, DisplayBand, GamutSpec, IntentDiagnostics, IntentId,
+    LearnedField, LookupTableField, RegimeLabel, RegimeReading, SacrificeRecord, SubstrateState,
+    TangentFlowField, TranslationField, TranslationRule,
 };
 
 use crate::gfdr_model::vertex_regime;
@@ -80,6 +89,13 @@ pub enum OperationError {
     /// `Method::Grid` or `Method::Auto` (which routes lookup_table to
     /// grid).
     GradientOnLookupTable,
+    /// `intent_compose` called with an empty intent list. Mirrors
+    /// Python's `ValueError("intent_compose requires at least one intent")`.
+    IntentComposeEmpty,
+    /// `intent_compose` called with I2 alongside other intents. Per
+    /// RFC-S §3: I2 (drive-faithful) does not compose with adjusting
+    /// intents. Mirrors Python's `ValueError("I2 ... does not compose ...")`.
+    I2InComposition,
 }
 
 impl std::fmt::Display for OperationError {
@@ -108,6 +124,14 @@ impl std::fmt::Display for OperationError {
                 "method='gradient' requires a differentiable field \
                  (TangentFlowField or LearnedField); got LookupTableField \
                  (use method='grid' for lookup_table)."
+            ),
+            Self::IntentComposeEmpty => {
+                write!(f, "intent_compose requires at least one intent")
+            }
+            Self::I2InComposition => write!(
+                f,
+                "I2 (drive-faithful) does not compose with adjusting intents \
+                 (RFC-S §3). Call intent_map(IntentId::I2) directly."
             ),
         }
     }
@@ -909,6 +933,370 @@ pub fn gamut_classify(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Op 6: intent_map + intent_compose (RFC-S §3 — session 6)
+// ---------------------------------------------------------------------------
+//
+// Five intents map an out-of-gamut canonical state to in-gamut, each
+// preserving a named invariant:
+//
+//   I1 regime-preserving   : 5-bucket regime ∧ sign(gamma_AB) ∧ k_frust
+//                            (the strongest constraint; subsumes I3/I4/I5
+//                            on a single state)
+//   I2 drive-faithful      : no adjustment; out-of-gamut flagged as
+//                            completeness sacrifice (RFC-S §3
+//                            "out-of-gamut rejected, diagnostic-listed")
+//   I3 capacity-preserving : capacity class (|chit| >= 0.7 deep vs shallow)
+//                            ∧ k_frust
+//   I4 persistence-preserv : sign(gamma_AB) (contraction-ordering proxy at
+//                            the state level)
+//   I5 signature-preserving: 5-bucket regime label (v0/v1 contract)
+//
+// Each handler returns (mapped, SacrificeRecord). I5's v0/v1 diagnostic
+// keys (regime_preserved / original_regime / mapped_regime) are
+// preserved verbatim via `IntentDiagnostics::I5`; the v2.3 uniform keys
+// (preserved_invariant, invariant_preserved) live on the outer record /
+// `preserved_invariant()` derived method per the BLOCK_IN §v6 session-6
+// sketch.
+
+/// Map an out-of-gamut canonical state to in-gamut per the chosen intent.
+/// Mirror of Python's `intent_map`.
+///
+/// Per RFC-S §3: scale uniformly along the gamut to fit, preserving the
+/// named invariant. The state-level invariant for each intent is
+/// documented in the module header above; sacrifice records carry the
+/// uniform `invariant_preserved` field plus intent-specific diagnostics.
+///
+/// `tau_obs` is accepted for parity with Python but not consumed by any
+/// of the five handlers — state-level intent mapping is a function of
+/// `(state, gamut)` only at this layer.
+pub fn intent_map(
+    state: &CanonicalState,
+    tau_obs: f64,
+    gamut: &GamutSpec,
+    intent: IntentId,
+) -> (CanonicalState, SacrificeRecord) {
+    match intent {
+        IntentId::I1 => intent_i1(state, tau_obs, gamut),
+        IntentId::I2 => intent_i2(state, tau_obs, gamut),
+        IntentId::I3 => intent_i3(state, tau_obs, gamut),
+        IntentId::I4 => intent_i4(state, tau_obs, gamut),
+        IntentId::I5 => intent_i5(state, tau_obs, gamut),
+    }
+}
+
+/// Apply intents sequentially per RFC-S §3 composition algebra. Mirror
+/// of Python's `intent_compose`.
+///
+/// Per §3: "Two adjacent intents compose iff their preserved-invariant
+/// sets union without conflict. I2 (drive-faithful) does not compose
+/// with adjusting intents." This function enforces the I2 rule by
+/// rejecting any composition containing I2 alongside other intents.
+/// Beyond that, the union-without-conflict check is evidential: it
+/// surfaces in each sacrifice's `invariant_preserved` flag — if a later
+/// intent could not preserve its invariant on the output of an earlier
+/// intent, the conflict is observable in the sacrifice trace.
+///
+/// Empty `intents` returns `OperationError::IntentComposeEmpty`.
+pub fn intent_compose(
+    state: &CanonicalState,
+    tau_obs: f64,
+    gamut: &GamutSpec,
+    intents: &[IntentId],
+) -> Result<(CanonicalState, Vec<SacrificeRecord>), OperationError> {
+    if intents.is_empty() {
+        return Err(OperationError::IntentComposeEmpty);
+    }
+    if intents.len() > 1 && intents.iter().any(|&i| i == IntentId::I2) {
+        return Err(OperationError::I2InComposition);
+    }
+    let mut sacrifices = Vec::with_capacity(intents.len());
+    let mut current = state.clone();
+    for &iid in intents {
+        let (next, sac) = intent_map(&current, tau_obs, gamut, iid);
+        current = next;
+        sacrifices.push(sac);
+    }
+    Ok((current, sacrifices))
+}
+
+// ---- intent helpers --------------------------------------------------------
+
+fn sign_i(x: f64) -> i32 {
+    if x > 0.0 {
+        1
+    } else if x < 0.0 {
+        -1
+    } else {
+        0
+    }
+}
+
+fn capacity_class(chit: f64) -> CapacityClass {
+    if chit.abs() >= 0.7 {
+        CapacityClass::Deep
+    } else {
+        CapacityClass::Shallow
+    }
+}
+
+fn clamp_to_gamut(state: &CanonicalState, gamut: &GamutSpec) -> CanonicalState {
+    CanonicalState {
+        chit: state.chit.clamp(gamut.chit_range.0, gamut.chit_range.1),
+        gamma_AB: state
+            .gamma_AB
+            .clamp(gamut.gamma_AB_range.0, gamut.gamma_AB_range.1),
+        k_frust: state.k_frust,
+    }
+}
+
+/// 5-bucket regime intervals on chit (matches `gfdr_model::vertex_regime`).
+/// Open on the inside; the boundaries belong to the deeper bucket per
+/// `vertex_regime`'s `chit >= 0.7` form (inclusive of 0.7 / 0.2).
+fn regime_chit_interval(regime: RegimeLabel) -> (f64, f64) {
+    match regime {
+        RegimeLabel::DeepC => (0.7, f64::INFINITY),
+        RegimeLabel::CNearS => (0.2, 0.7),
+        RegimeLabel::SCritical => (-0.2, 0.2),
+        RegimeLabel::RNearS => (-0.7, -0.2),
+        RegimeLabel::DeepR => (f64::NEG_INFINITY, -0.7),
+    }
+}
+
+/// Nearest in-gamut chit preserving `regime`, or `None` if unreachable.
+/// The regime intervals are half-open on the deep side per
+/// `vertex_regime`'s `chit >= threshold` form; we treat each interval
+/// as closed for clipping purposes (vertex_regime's boundary inclusion
+/// makes the endpoint a valid representative of the regime).
+fn nearest_in_gamut_chit_for_regime(
+    orig_chit: f64,
+    regime: RegimeLabel,
+    chit_range: (f64, f64),
+) -> Option<f64> {
+    let (lo_r, hi_r) = regime_chit_interval(regime);
+    let (lo_g, hi_g) = chit_range;
+    let lo = lo_r.max(lo_g);
+    let hi = hi_r.min(hi_g);
+    if lo > hi {
+        return None;
+    }
+    if lo == hi {
+        return Some(lo);
+    }
+    Some(orig_chit.clamp(lo, hi))
+}
+
+/// Clamp `value` to `rng` preserving sign. Returns
+/// `(clamped, sign_preserved)`. Mirror of Python's
+/// `_sign_preserving_clamp`.
+///
+/// `orig_sign == 0` returns the naive clamp (zero has no sign to
+/// preserve). Otherwise prefers the nearest in-range value with the
+/// same sign; falls back to the naive clamp with `sign_preserved=false`
+/// when the gamut excludes the sign entirely.
+fn sign_preserving_clamp(value: f64, orig_sign: i32, rng: (f64, f64)) -> (f64, bool) {
+    let (lo, hi) = rng;
+    if orig_sign == 0 {
+        return (value.clamp(lo, hi), true);
+    }
+    if orig_sign > 0 {
+        if hi <= 0.0 {
+            return (value.clamp(lo, hi), false);
+        }
+        let sub_lo = lo.max(0.0);
+        return (value.clamp(sub_lo, hi), true);
+    }
+    // orig_sign < 0
+    if lo >= 0.0 {
+        return (value.clamp(lo, hi), false);
+    }
+    let sub_hi = hi.min(0.0);
+    (value.clamp(lo, sub_hi), true)
+}
+
+// ---- the five handlers -----------------------------------------------------
+
+/// I1 regime-preserving: 5-bucket regime ∧ sign(gamma_AB) ∧ k_frust.
+fn intent_i1(
+    state: &CanonicalState,
+    _tau_obs: f64,
+    gamut: &GamutSpec,
+) -> (CanonicalState, SacrificeRecord) {
+    let orig_regime = vertex_regime(state.chit);
+    let orig_sign = sign_i(state.gamma_AB);
+
+    let target_chit = nearest_in_gamut_chit_for_regime(state.chit, orig_regime, gamut.chit_range);
+    let regime_preserved = target_chit.is_some();
+    let chit_out = target_chit
+        .unwrap_or_else(|| state.chit.clamp(gamut.chit_range.0, gamut.chit_range.1));
+
+    let (gamma_out, sign_preserved) =
+        sign_preserving_clamp(state.gamma_AB, orig_sign, gamut.gamma_AB_range);
+
+    let mapped = CanonicalState {
+        chit: chit_out,
+        gamma_AB: gamma_out,
+        k_frust: state.k_frust,
+    };
+    let invariant_preserved = regime_preserved && sign_preserved;
+    let mapped_regime = vertex_regime(chit_out);
+    let sac = SacrificeRecord {
+        invariant_preserved,
+        delta_chit: chit_out - state.chit,
+        delta_gamma_AB: gamma_out - state.gamma_AB,
+        diagnostics: IntentDiagnostics::I1 {
+            regime_preserved,
+            gamma_AB_sign_preserved: sign_preserved,
+            k_frust_preserved: true,
+            original_regime: orig_regime,
+            mapped_regime,
+            original_gamma_AB_sign: orig_sign,
+            mapped_gamma_AB_sign: sign_i(gamma_out),
+        },
+    };
+    (mapped, sac)
+}
+
+/// I2 drive-faithful: no adjustment; flag completeness if out-of-gamut.
+/// Per RFC-S §3: "Completeness sacrificed (out-of-gamut rejected,
+/// diagnostic-listed)." The mapped state equals the original.
+fn intent_i2(
+    state: &CanonicalState,
+    _tau_obs: f64,
+    gamut: &GamutSpec,
+) -> (CanonicalState, SacrificeRecord) {
+    let chit_oog = !(gamut.chit_range.0 <= state.chit && state.chit <= gamut.chit_range.1);
+    let gamma_oog =
+        !(gamut.gamma_AB_range.0 <= state.gamma_AB && state.gamma_AB <= gamut.gamma_AB_range.1);
+    let in_gamut = !(chit_oog || gamma_oog);
+    let mut out_of_gamut_axes = Vec::new();
+    if chit_oog {
+        out_of_gamut_axes.push("chit".to_string());
+    }
+    if gamma_oog {
+        out_of_gamut_axes.push("gamma_AB".to_string());
+    }
+    let sac = SacrificeRecord {
+        invariant_preserved: in_gamut,
+        delta_chit: 0.0,
+        delta_gamma_AB: 0.0,
+        diagnostics: IntentDiagnostics::I2 {
+            out_of_gamut_rejected: !in_gamut,
+            out_of_gamut_axes,
+        },
+    };
+    (state.clone(), sac)
+}
+
+/// I3 capacity-preserving: capacity class (|chit| >= 0.7 deep) ∧ k_frust.
+fn intent_i3(
+    state: &CanonicalState,
+    _tau_obs: f64,
+    gamut: &GamutSpec,
+) -> (CanonicalState, SacrificeRecord) {
+    let orig_capacity = capacity_class(state.chit);
+    let mut clamped = clamp_to_gamut(state, gamut);
+    let mut mapped_capacity = capacity_class(clamped.chit);
+
+    // If naive clamp drops a deep state to shallow, try the in-gamut
+    // endpoint on the same side that retains deep.
+    if orig_capacity == CapacityClass::Deep && mapped_capacity == CapacityClass::Shallow {
+        if state.chit >= 0.7 && gamut.chit_range.1 >= 0.7 {
+            clamped = CanonicalState {
+                chit: state.chit.min(gamut.chit_range.1),
+                gamma_AB: clamped.gamma_AB,
+                k_frust: state.k_frust,
+            };
+            mapped_capacity = capacity_class(clamped.chit);
+        } else if state.chit <= -0.7 && gamut.chit_range.0 <= -0.7 {
+            clamped = CanonicalState {
+                chit: state.chit.max(gamut.chit_range.0),
+                gamma_AB: clamped.gamma_AB,
+                k_frust: state.k_frust,
+            };
+            mapped_capacity = capacity_class(clamped.chit);
+        }
+    }
+
+    let capacity_preserved = orig_capacity == mapped_capacity;
+    let sac = SacrificeRecord {
+        invariant_preserved: capacity_preserved,
+        delta_chit: clamped.chit - state.chit,
+        delta_gamma_AB: clamped.gamma_AB - state.gamma_AB,
+        diagnostics: IntentDiagnostics::I3 {
+            capacity_class: orig_capacity,
+            mapped_capacity_class: mapped_capacity,
+            k_frust: state.k_frust,
+            k_frust_preserved: true,
+        },
+    };
+    (clamped, sac)
+}
+
+/// I4 persistence-preserving: sign(gamma_AB) (contraction-ordering proxy).
+fn intent_i4(
+    state: &CanonicalState,
+    _tau_obs: f64,
+    gamut: &GamutSpec,
+) -> (CanonicalState, SacrificeRecord) {
+    let clamped = clamp_to_gamut(state, gamut);
+    let orig_sign = sign_i(state.gamma_AB);
+    let (gamma_out, sign_preserved) =
+        sign_preserving_clamp(state.gamma_AB, orig_sign, gamut.gamma_AB_range);
+    let mapped = CanonicalState {
+        chit: clamped.chit,
+        gamma_AB: gamma_out,
+        k_frust: state.k_frust,
+    };
+    let sac = SacrificeRecord {
+        invariant_preserved: sign_preserved,
+        delta_chit: mapped.chit - state.chit,
+        delta_gamma_AB: mapped.gamma_AB - state.gamma_AB,
+        diagnostics: IntentDiagnostics::I4 {
+            original_gamma_AB_sign: orig_sign,
+            mapped_gamma_AB_sign: sign_i(gamma_out),
+        },
+    };
+    (mapped, sac)
+}
+
+/// I5 signature-preserving: 5-bucket regime label.
+///
+/// v0/v1 contract: naive clamp on both axes; report `regime_preserved`
+/// based on the 5-bucket `vertex_regime` comparison. Per RFC-S §5
+/// metric, I5 is universality-class agreement; the 5-bucket regime is
+/// the universality-class label at the operational layer (each regime
+/// carries its own FDR-signature exponents per cdv1).
+fn intent_i5(
+    state: &CanonicalState,
+    _tau_obs: f64,
+    gamut: &GamutSpec,
+) -> (CanonicalState, SacrificeRecord) {
+    let original_regime = vertex_regime(state.chit);
+    let chit_out = state.chit.clamp(gamut.chit_range.0, gamut.chit_range.1);
+    let gamma_out = state
+        .gamma_AB
+        .clamp(gamut.gamma_AB_range.0, gamut.gamma_AB_range.1);
+    let mapped = CanonicalState {
+        chit: chit_out,
+        gamma_AB: gamma_out,
+        k_frust: state.k_frust,
+    };
+    let mapped_regime = vertex_regime(chit_out);
+    let regime_preserved = original_regime == mapped_regime;
+    let sac = SacrificeRecord {
+        invariant_preserved: regime_preserved,
+        delta_chit: chit_out - state.chit,
+        delta_gamma_AB: gamma_out - state.gamma_AB,
+        diagnostics: IntentDiagnostics::I5 {
+            regime_preserved,
+            original_regime,
+            mapped_regime,
+        },
+    };
+    (mapped, sac)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1595,6 +1983,461 @@ mod tests {
         .unwrap();
         // Grid step 0.25 — recovery error of that scale.
         assert!((result.best_state.chit - truth.chit).abs() > 0.05);
+    }
+
+    // -----------------------------------------------------------------
+    // Session 6: intent algebra (intent_map + intent_compose). Mirror
+    // of tests/test_intents.py — the wrapped-variant tests
+    // (TestValidation) are skipped until session 7 lands validation.rs +
+    // *_wrapped.
+    // -----------------------------------------------------------------
+
+    fn gamut_unit() -> GamutSpec {
+        GamutSpec {
+            chit_range: (-1.0, 1.0),
+            gamma_AB_range: (-1.0, 1.0),
+            tau_obs_range: None,
+            out_of_scope_residual_threshold: 0.05,
+        }
+    }
+
+    fn gamut_chit(lo: f64, hi: f64) -> GamutSpec {
+        GamutSpec {
+            chit_range: (lo, hi),
+            gamma_AB_range: (-1.0, 1.0),
+            tau_obs_range: None,
+            out_of_scope_residual_threshold: 0.05,
+        }
+    }
+
+    fn gamut_gamma(lo: f64, hi: f64) -> GamutSpec {
+        GamutSpec {
+            chit_range: (-1.0, 1.0),
+            gamma_AB_range: (lo, hi),
+            tau_obs_range: None,
+            out_of_scope_residual_threshold: 0.05,
+        }
+    }
+
+    fn state(chit: f64, gamma: f64) -> CanonicalState {
+        CanonicalState {
+            chit,
+            gamma_AB: gamma,
+            k_frust: false,
+        }
+    }
+
+    // ---- I1 ---------------------------------------------------------
+
+    #[test]
+    fn i1_clamp_preserves_regime_when_possible() {
+        let (mapped, sac) = intent_map(&state(2.0, 0.3), 1.0, &gamut_unit(), IntentId::I1);
+        assert!(sac.invariant_preserved);
+        match sac.diagnostics {
+            IntentDiagnostics::I1 {
+                regime_preserved,
+                original_regime,
+                mapped_regime,
+                ..
+            } => {
+                assert!(regime_preserved);
+                assert_eq!(original_regime, RegimeLabel::DeepC);
+                assert_eq!(mapped_regime, RegimeLabel::DeepC);
+            }
+            _ => panic!("expected I1 diagnostics"),
+        }
+        assert_eq!(mapped.chit, 1.0);
+    }
+
+    #[test]
+    fn i1_regime_unreachable_flags_sacrifice() {
+        let (mapped, sac) =
+            intent_map(&state(2.0, 0.0), 1.0, &gamut_chit(-0.5, 0.5), IntentId::I1);
+        assert!(!sac.invariant_preserved);
+        match sac.diagnostics {
+            IntentDiagnostics::I1 {
+                regime_preserved,
+                original_regime,
+                mapped_regime,
+                ..
+            } => {
+                assert!(!regime_preserved);
+                assert_eq!(original_regime, RegimeLabel::DeepC);
+                assert_ne!(mapped_regime, RegimeLabel::DeepC);
+            }
+            _ => panic!("expected I1 diagnostics"),
+        }
+        // naive clamp falls back to gamut max
+        assert_eq!(mapped.chit, 0.5);
+    }
+
+    #[test]
+    fn i1_in_gamut_no_change() {
+        let (mapped, sac) = intent_map(&state(0.3, -0.2), 1.0, &gamut_unit(), IntentId::I1);
+        assert!(sac.invariant_preserved);
+        assert_eq!(mapped.chit, 0.3);
+        assert_eq!(mapped.gamma_AB, -0.2);
+    }
+
+    #[test]
+    fn i1_gamma_sign_flip_flags_sacrifice() {
+        let (_mapped, sac) =
+            intent_map(&state(0.0, 0.5), 1.0, &gamut_gamma(-1.0, -0.1), IntentId::I1);
+        assert!(!sac.invariant_preserved);
+        match sac.diagnostics {
+            IntentDiagnostics::I1 {
+                gamma_AB_sign_preserved,
+                original_gamma_AB_sign,
+                mapped_gamma_AB_sign,
+                ..
+            } => {
+                assert!(!gamma_AB_sign_preserved);
+                assert_eq!(original_gamma_AB_sign, 1);
+                assert_eq!(mapped_gamma_AB_sign, -1);
+            }
+            _ => panic!("expected I1 diagnostics"),
+        }
+    }
+
+    #[test]
+    fn i1_k_frust_propagated() {
+        let s = CanonicalState {
+            chit: 2.0,
+            gamma_AB: 0.0,
+            k_frust: true,
+        };
+        let (mapped, sac) = intent_map(&s, 1.0, &gamut_unit(), IntentId::I1);
+        assert!(mapped.k_frust);
+        match sac.diagnostics {
+            IntentDiagnostics::I1 {
+                k_frust_preserved, ..
+            } => assert!(k_frust_preserved),
+            _ => panic!("expected I1 diagnostics"),
+        }
+    }
+
+    // ---- I2 ---------------------------------------------------------
+
+    #[test]
+    fn i2_in_gamut_passthrough() {
+        let s = state(0.3, -0.2);
+        let (mapped, sac) = intent_map(&s, 1.0, &gamut_unit(), IntentId::I2);
+        assert_eq!(mapped, s);
+        assert!(sac.invariant_preserved);
+        match &sac.diagnostics {
+            IntentDiagnostics::I2 {
+                out_of_gamut_rejected,
+                ..
+            } => assert!(!out_of_gamut_rejected),
+            _ => panic!("expected I2 diagnostics"),
+        }
+    }
+
+    #[test]
+    fn i2_out_of_gamut_unchanged_and_flagged() {
+        let s = state(2.0, 0.0);
+        let (mapped, sac) = intent_map(&s, 1.0, &gamut_unit(), IntentId::I2);
+        assert_eq!(mapped, s); // NOT clamped
+        assert!(!sac.invariant_preserved);
+        assert_eq!(sac.delta_chit, 0.0);
+        match sac.diagnostics {
+            IntentDiagnostics::I2 {
+                out_of_gamut_rejected,
+                out_of_gamut_axes,
+            } => {
+                assert!(out_of_gamut_rejected);
+                assert!(out_of_gamut_axes.iter().any(|a| a == "chit"));
+            }
+            _ => panic!("expected I2 diagnostics"),
+        }
+    }
+
+    #[test]
+    fn i2_both_axes_oog_listed() {
+        let (_mapped, sac) = intent_map(&state(2.0, 2.0), 1.0, &gamut_unit(), IntentId::I2);
+        match sac.diagnostics {
+            IntentDiagnostics::I2 {
+                out_of_gamut_axes, ..
+            } => {
+                assert!(out_of_gamut_axes.iter().any(|a| a == "chit"));
+                assert!(out_of_gamut_axes.iter().any(|a| a == "gamma_AB"));
+            }
+            _ => panic!("expected I2 diagnostics"),
+        }
+    }
+
+    // ---- I3 ---------------------------------------------------------
+
+    #[test]
+    fn i3_deep_state_preserves_capacity_class() {
+        let (mapped, sac) = intent_map(&state(0.9, 0.0), 1.0, &gamut_unit(), IntentId::I3);
+        assert!(sac.invariant_preserved);
+        match sac.diagnostics {
+            IntentDiagnostics::I3 {
+                capacity_class,
+                mapped_capacity_class,
+                ..
+            } => {
+                assert_eq!(capacity_class, CapacityClass::Deep);
+                assert_eq!(mapped_capacity_class, CapacityClass::Deep);
+            }
+            _ => panic!("expected I3 diagnostics"),
+        }
+        assert_eq!(mapped.chit, 0.9);
+    }
+
+    #[test]
+    fn i3_deep_state_demoted_to_shallow_flags() {
+        let (mapped, sac) =
+            intent_map(&state(0.9, 0.0), 1.0, &gamut_chit(-0.5, 0.5), IntentId::I3);
+        assert!(!sac.invariant_preserved);
+        match sac.diagnostics {
+            IntentDiagnostics::I3 {
+                capacity_class,
+                mapped_capacity_class,
+                ..
+            } => {
+                assert_eq!(capacity_class, CapacityClass::Deep);
+                assert_eq!(mapped_capacity_class, CapacityClass::Shallow);
+            }
+            _ => panic!("expected I3 diagnostics"),
+        }
+        assert_eq!(mapped.chit, 0.5);
+    }
+
+    #[test]
+    fn i3_deep_state_clamped_to_gamut_edge_when_still_deep() {
+        let (mapped, sac) = intent_map(&state(2.0, 0.0), 1.0, &gamut_unit(), IntentId::I3);
+        assert!(sac.invariant_preserved);
+        assert_eq!(mapped.chit, 1.0);
+        match sac.diagnostics {
+            IntentDiagnostics::I3 {
+                capacity_class,
+                mapped_capacity_class,
+                ..
+            } => {
+                assert_eq!(capacity_class, CapacityClass::Deep);
+                assert_eq!(mapped_capacity_class, CapacityClass::Deep);
+            }
+            _ => panic!("expected I3 diagnostics"),
+        }
+    }
+
+    #[test]
+    fn i3_k_frust_propagated() {
+        let s = CanonicalState {
+            chit: 0.9,
+            gamma_AB: 0.0,
+            k_frust: true,
+        };
+        let (mapped, sac) = intent_map(&s, 1.0, &gamut_unit(), IntentId::I3);
+        assert!(mapped.k_frust);
+        match sac.diagnostics {
+            IntentDiagnostics::I3 { k_frust, .. } => assert!(k_frust),
+            _ => panic!("expected I3 diagnostics"),
+        }
+    }
+
+    // ---- I4 ---------------------------------------------------------
+
+    #[test]
+    fn i4_positive_gamma_kept_positive() {
+        let (mapped, sac) = intent_map(&state(0.0, 2.0), 1.0, &gamut_unit(), IntentId::I4);
+        assert!(sac.invariant_preserved);
+        match sac.diagnostics {
+            IntentDiagnostics::I4 {
+                original_gamma_AB_sign,
+                mapped_gamma_AB_sign,
+            } => {
+                assert_eq!(original_gamma_AB_sign, 1);
+                assert_eq!(mapped_gamma_AB_sign, 1);
+            }
+            _ => panic!("expected I4 diagnostics"),
+        }
+        assert_eq!(mapped.gamma_AB, 1.0);
+    }
+
+    #[test]
+    fn i4_sign_flip_flagged_when_gamut_excludes_sign() {
+        let (_mapped, sac) =
+            intent_map(&state(0.0, 0.5), 1.0, &gamut_gamma(-1.0, -0.1), IntentId::I4);
+        assert!(!sac.invariant_preserved);
+        match sac.diagnostics {
+            IntentDiagnostics::I4 {
+                original_gamma_AB_sign,
+                mapped_gamma_AB_sign,
+            } => {
+                assert_eq!(original_gamma_AB_sign, 1);
+                assert_eq!(mapped_gamma_AB_sign, -1);
+            }
+            _ => panic!("expected I4 diagnostics"),
+        }
+    }
+
+    #[test]
+    fn i4_zero_gamma_treated_as_signless() {
+        let (mapped, sac) = intent_map(&state(0.0, 0.0), 1.0, &gamut_unit(), IntentId::I4);
+        assert!(sac.invariant_preserved);
+        assert_eq!(mapped.gamma_AB, 0.0);
+    }
+
+    // ---- I5 (uniform keys + v1 back-compat) -------------------------
+
+    #[test]
+    fn i5_carries_v23_invariant_keys_and_v1_back_compat() {
+        let (_mapped, sac) = intent_map(&state(2.0, 0.0), 1.0, &gamut_unit(), IntentId::I5);
+        // v2.3 uniform: preserved_invariant derived; invariant_preserved on outer.
+        assert_eq!(sac.preserved_invariant(), "regime_label");
+        // v1 back-compat: regime_preserved present in diagnostics, and
+        // matches invariant_preserved (for I5 they are the same boolean).
+        match sac.diagnostics {
+            IntentDiagnostics::I5 {
+                regime_preserved, ..
+            } => assert_eq!(sac.invariant_preserved, regime_preserved),
+            _ => panic!("expected I5 diagnostics"),
+        }
+    }
+
+    // ---- Composition (RFC-S §3) -------------------------------------
+
+    #[test]
+    fn compose_single_intent_equals_intent_map() {
+        let s = state(2.0, 0.5);
+        let g = gamut_unit();
+        let (mapped_a, sacs) = intent_compose(&s, 1.0, &g, &[IntentId::I5]).unwrap();
+        let (mapped_b, sac) = intent_map(&s, 1.0, &g, IntentId::I5);
+        assert_eq!(mapped_a, mapped_b);
+        assert_eq!(sacs.len(), 1);
+        match (&sacs[0].diagnostics, &sac.diagnostics) {
+            (
+                IntentDiagnostics::I5 {
+                    regime_preserved: rp_a,
+                    ..
+                },
+                IntentDiagnostics::I5 {
+                    regime_preserved: rp_b,
+                    ..
+                },
+            ) => assert_eq!(rp_a, rp_b),
+            _ => panic!("expected I5 diagnostics on both"),
+        }
+    }
+
+    #[test]
+    fn compose_idempotent_under_same_intent() {
+        let s = state(2.0, 0.0);
+        let g = gamut_unit();
+        let (once, _) = intent_compose(&s, 1.0, &g, &[IntentId::I3]).unwrap();
+        let (twice, _) = intent_compose(&s, 1.0, &g, &[IntentId::I3, IntentId::I3]).unwrap();
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn compose_i1_then_i3_composable() {
+        let s = state(2.0, 0.3);
+        let g = gamut_unit();
+        let (mapped, sacs) = intent_compose(&s, 1.0, &g, &[IntentId::I1, IntentId::I3]).unwrap();
+        assert_eq!(sacs.len(), 2);
+        assert!(sacs[0].invariant_preserved);
+        assert!(sacs[1].invariant_preserved);
+        assert!((-1.0..=1.0).contains(&mapped.chit));
+        assert!((-1.0..=1.0).contains(&mapped.gamma_AB));
+    }
+
+    #[test]
+    fn compose_i3_then_i4_composable() {
+        let s = state(0.9, 2.0);
+        let g = gamut_unit();
+        let (mapped, sacs) = intent_compose(&s, 1.0, &g, &[IntentId::I3, IntentId::I4]).unwrap();
+        assert!(sacs[0].invariant_preserved); // capacity preserved
+        assert!(sacs[1].invariant_preserved); // sign preserved
+        assert_eq!(mapped.chit, 0.9);
+        assert_eq!(mapped.gamma_AB, 1.0);
+    }
+
+    #[test]
+    fn compose_i2_does_not_compose() {
+        let g = gamut_unit();
+        let s = state(0.0, 0.0);
+        assert_eq!(
+            intent_compose(&s, 1.0, &g, &[IntentId::I1, IntentId::I2]).unwrap_err(),
+            OperationError::I2InComposition
+        );
+        assert_eq!(
+            intent_compose(&s, 1.0, &g, &[IntentId::I2, IntentId::I1]).unwrap_err(),
+            OperationError::I2InComposition
+        );
+    }
+
+    #[test]
+    fn compose_i2_alone_is_legal() {
+        let s = state(0.3, -0.2);
+        let g = gamut_unit();
+        let (mapped, sacs) = intent_compose(&s, 1.0, &g, &[IntentId::I2]).unwrap();
+        assert_eq!(mapped, s);
+        assert_eq!(sacs.len(), 1);
+        assert_eq!(sacs[0].intent(), IntentId::I2);
+    }
+
+    #[test]
+    fn compose_empty_intents_errors() {
+        let s = state(0.0, 0.0);
+        let g = gamut_unit();
+        assert_eq!(
+            intent_compose(&s, 1.0, &g, &[]).unwrap_err(),
+            OperationError::IntentComposeEmpty
+        );
+    }
+
+    #[test]
+    fn compose_conflict_surfaces_in_sacrifice_trace() {
+        // I1 on a deep_c state in a chit=[-0.5, 0.5] gamut breaks regime.
+        // Composing I3 after that succeeds on the now in-gamut shallow state.
+        let g = gamut_chit(-0.5, 0.5);
+        let s = state(2.0, 0.0);
+        let (_mapped, sacs) =
+            intent_compose(&s, 1.0, &g, &[IntentId::I1, IntentId::I3]).unwrap();
+        assert!(!sacs[0].invariant_preserved);
+        assert!(sacs[1].invariant_preserved);
+    }
+
+    #[test]
+    fn sacrifice_record_intent_and_preserved_invariant_methods() {
+        // Spot-check every variant returns its expected pair.
+        let g = gamut_unit();
+        let (_m1, s1) = intent_map(&state(0.0, 0.0), 1.0, &g, IntentId::I1);
+        assert_eq!(s1.intent(), IntentId::I1);
+        assert_eq!(s1.preserved_invariant(), "regime ∧ sign(gamma_AB) ∧ k_frust");
+
+        let (_m2, s2) = intent_map(&state(0.0, 0.0), 1.0, &g, IntentId::I2);
+        assert_eq!(s2.intent(), IntentId::I2);
+        assert_eq!(s2.preserved_invariant(), "exact_drive_parameters");
+
+        let (_m3, s3) = intent_map(&state(0.0, 0.0), 1.0, &g, IntentId::I3);
+        assert_eq!(s3.intent(), IntentId::I3);
+        assert_eq!(s3.preserved_invariant(), "capacity_class ∧ k_frust");
+
+        let (_m4, s4) = intent_map(&state(0.0, 0.0), 1.0, &g, IntentId::I4);
+        assert_eq!(s4.intent(), IntentId::I4);
+        assert_eq!(s4.preserved_invariant(), "sign(gamma_AB)");
+
+        let (_m5, s5) = intent_map(&state(0.0, 0.0), 1.0, &g, IntentId::I5);
+        assert_eq!(s5.intent(), IntentId::I5);
+        assert_eq!(s5.preserved_invariant(), "regime_label");
+    }
+
+    #[test]
+    fn sacrifice_record_serde_flatten_round_trip() {
+        // The #[serde(flatten)] + #[serde(tag="intent")] combination should
+        // produce a single flat JSON object. Round-trip is the smoke check.
+        let (_m, sac) = intent_map(&state(2.0, 0.3), 1.0, &gamut_unit(), IntentId::I1);
+        let json = serde_json::to_string(&sac).expect("serialize");
+        // Sanity: the flat JSON contains both the common and intent-specific keys.
+        assert!(json.contains("\"invariant_preserved\":"));
+        assert!(json.contains("\"intent\":\"I1\""));
+        assert!(json.contains("\"regime_preserved\":"));
+        let round: SacrificeRecord = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round, sac);
     }
 
     #[test]

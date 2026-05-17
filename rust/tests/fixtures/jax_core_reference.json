@@ -3152,5 +3152,506 @@
         "gamma_AB": 1.6758001150890984
       }
     }
+  ],
+  "sacrifice_record": [
+    {
+      "inputs": {
+        "chit": 2.0,
+        "gamma_AB": 0.3,
+        "k_frust": false,
+        "tau_obs": 1.0,
+        "gamut": {
+          "chit_range": [
+            -1.0,
+            1.0
+          ],
+          "gamma_AB_range": [
+            -1.0,
+            1.0
+          ]
+        },
+        "intent_id": "I1",
+        "notes": "deep_c preserved on unit gamut"
+      },
+      "outputs": {
+        "mapped": {
+          "chit": 1.0,
+          "gamma_AB": 0.3,
+          "k_frust": false
+        },
+        "sacrifice": {
+          "intent": "I1",
+          "preserved_invariant": "regime \u2227 sign(gamma_AB) \u2227 k_frust",
+          "invariant_preserved": true,
+          "delta_chit": -1.0,
+          "delta_gamma_AB": 0.0,
+          "regime_preserved": true,
+          "gamma_AB_sign_preserved": true,
+          "k_frust_preserved": true,
+          "original_regime": "deep_c",
+          "mapped_regime": "deep_c",
+          "original_gamma_AB_sign": 1,
+          "mapped_gamma_AB_sign": 1
+        }
+      }
+    },
+    {
+      "inputs": {
+        "chit": 2.0,
+        "gamma_AB": 0.0,
+        "k_frust": false,
+        "tau_obs": 1.0,
+        "gamut": {
+          "chit_range": [
+            -0.5,
+            0.5
+          ],
+          "gamma_AB_range": [
+            -1.0,
+            1.0
+          ]
+        },
+        "intent_id": "I1",
+        "notes": "regime unreachable \u2014 invariant breaks"
+      },
+      "outputs": {
+        "mapped": {
+          "chit": 0.5,
+          "gamma_AB": 0.0,
+          "k_frust": false
+        },
+        "sacrifice": {
+          "intent": "I1",
+          "preserved_invariant": "regime \u2227 sign(gamma_AB) \u2227 k_frust",
+          "invariant_preserved": false,
+          "delta_chit": -1.5,
+          "delta_gamma_AB": 0.0,
+          "regime_preserved": false,
+          "gamma_AB_sign_preserved": true,
+          "k_frust_preserved": true,
+          "original_regime": "deep_c",
+          "mapped_regime": "c_near_s",
+          "original_gamma_AB_sign": 0,
+          "mapped_gamma_AB_sign": 0
+        }
+      }
+    },
+    {
+      "inputs": {
+        "chit": 0.0,
+        "gamma_AB": 0.5,
+        "k_frust": false,
+        "tau_obs": 1.0,
+        "gamut": {
+          "chit_range": [
+            -1.0,
+            1.0
+          ],
+          "gamma_AB_range": [
+            -1.0,
+            -0.1
+          ]
+        },
+        "intent_id": "I1",
+        "notes": "gamma sign flip"
+      },
+      "outputs": {
+        "mapped": {
+          "chit": 0.0,
+          "gamma_AB": -0.1,
+          "k_frust": false
+        },
+        "sacrifice": {
+          "intent": "I1",
+          "preserved_invariant": "regime \u2227 sign(gamma_AB) \u2227 k_frust",
+          "invariant_preserved": false,
+          "delta_chit": 0.0,
+          "delta_gamma_AB": -0.6,
+          "regime_preserved": true,
+          "gamma_AB_sign_preserved": false,
+          "k_frust_preserved": true,
+          "original_regime": "s_critical",
+          "mapped_regime": "s_critical",
+          "original_gamma_AB_sign": 1,
+          "mapped_gamma_AB_sign": -1
+        }
+      }
+    },
+    {
+      "inputs": {
+        "chit": 2.0,
+        "gamma_AB": 0.0,
+        "k_frust": true,
+        "tau_obs": 1.0,
+        "gamut": {
+          "chit_range": [
+            -1.0,
+            1.0
+          ],
+          "gamma_AB_range": [
+            -1.0,
+            1.0
+          ]
+        },
+        "intent_id": "I1",
+        "notes": "k_frust propagates"
+      },
+      "outputs": {
+        "mapped": {
+          "chit": 1.0,
+          "gamma_AB": 0.0,
+          "k_frust": true
+        },
+        "sacrifice": {
+          "intent": "I1",
+          "preserved_invariant": "regime \u2227 sign(gamma_AB) \u2227 k_frust",
+          "invariant_preserved": true,
+          "delta_chit": -1.0,
+          "delta_gamma_AB": 0.0,
+          "regime_preserved": true,
+          "gamma_AB_sign_preserved": true,
+          "k_frust_preserved": true,
+          "original_regime": "deep_c",
+          "mapped_regime": "deep_c",
+          "original_gamma_AB_sign": 0,
+          "mapped_gamma_AB_sign": 0
+        }
+      }
+    },
+    {
+      "inputs": {
+        "chit": 0.3,
+        "gamma_AB": -0.2,
+        "k_frust": false,
+        "tau_obs": 1.0,
+        "gamut": {
+          "chit_range": [
+            -1.0,
+            1.0
+          ],
+          "gamma_AB_range": [
+            -1.0,
+            1.0
+          ]
+        },
+        "intent_id": "I2",
+        "notes": "in-gamut passthrough"
+      },
+      "outputs": {
+        "mapped": {
+          "chit": 0.3,
+          "gamma_AB": -0.2,
+          "k_frust": false
+        },
+        "sacrifice": {
+          "intent": "I2",
+          "preserved_invariant": "exact_drive_parameters",
+          "invariant_preserved": true,
+          "delta_chit": 0.0,
+          "delta_gamma_AB": 0.0,
+          "out_of_gamut_rejected": false,
+          "out_of_gamut_axes": []
+        }
+      }
+    },
+    {
+      "inputs": {
+        "chit": 2.0,
+        "gamma_AB": 0.0,
+        "k_frust": false,
+        "tau_obs": 1.0,
+        "gamut": {
+          "chit_range": [
+            -1.0,
+            1.0
+          ],
+          "gamma_AB_range": [
+            -1.0,
+            1.0
+          ]
+        },
+        "intent_id": "I2",
+        "notes": "chit out-of-gamut"
+      },
+      "outputs": {
+        "mapped": {
+          "chit": 2.0,
+          "gamma_AB": 0.0,
+          "k_frust": false
+        },
+        "sacrifice": {
+          "intent": "I2",
+          "preserved_invariant": "exact_drive_parameters",
+          "invariant_preserved": false,
+          "delta_chit": 0.0,
+          "delta_gamma_AB": 0.0,
+          "out_of_gamut_rejected": true,
+          "out_of_gamut_axes": [
+            "chit"
+          ]
+        }
+      }
+    },
+    {
+      "inputs": {
+        "chit": 2.0,
+        "gamma_AB": 2.0,
+        "k_frust": false,
+        "tau_obs": 1.0,
+        "gamut": {
+          "chit_range": [
+            -1.0,
+            1.0
+          ],
+          "gamma_AB_range": [
+            -1.0,
+            1.0
+          ]
+        },
+        "intent_id": "I2",
+        "notes": "both axes out-of-gamut"
+      },
+      "outputs": {
+        "mapped": {
+          "chit": 2.0,
+          "gamma_AB": 2.0,
+          "k_frust": false
+        },
+        "sacrifice": {
+          "intent": "I2",
+          "preserved_invariant": "exact_drive_parameters",
+          "invariant_preserved": false,
+          "delta_chit": 0.0,
+          "delta_gamma_AB": 0.0,
+          "out_of_gamut_rejected": true,
+          "out_of_gamut_axes": [
+            "chit",
+            "gamma_AB"
+          ]
+        }
+      }
+    },
+    {
+      "inputs": {
+        "chit": 0.9,
+        "gamma_AB": 0.0,
+        "k_frust": false,
+        "tau_obs": 1.0,
+        "gamut": {
+          "chit_range": [
+            -1.0,
+            1.0
+          ],
+          "gamma_AB_range": [
+            -1.0,
+            1.0
+          ]
+        },
+        "intent_id": "I3",
+        "notes": "deep preserved"
+      },
+      "outputs": {
+        "mapped": {
+          "chit": 0.9,
+          "gamma_AB": 0.0,
+          "k_frust": false
+        },
+        "sacrifice": {
+          "intent": "I3",
+          "preserved_invariant": "capacity_class \u2227 k_frust",
+          "invariant_preserved": true,
+          "delta_chit": 0.0,
+          "delta_gamma_AB": 0.0,
+          "capacity_class": "deep",
+          "mapped_capacity_class": "deep",
+          "k_frust": false,
+          "k_frust_preserved": true
+        }
+      }
+    },
+    {
+      "inputs": {
+        "chit": 0.9,
+        "gamma_AB": 0.0,
+        "k_frust": false,
+        "tau_obs": 1.0,
+        "gamut": {
+          "chit_range": [
+            -0.5,
+            0.5
+          ],
+          "gamma_AB_range": [
+            -1.0,
+            1.0
+          ]
+        },
+        "intent_id": "I3",
+        "notes": "deep demoted to shallow"
+      },
+      "outputs": {
+        "mapped": {
+          "chit": 0.5,
+          "gamma_AB": 0.0,
+          "k_frust": false
+        },
+        "sacrifice": {
+          "intent": "I3",
+          "preserved_invariant": "capacity_class \u2227 k_frust",
+          "invariant_preserved": false,
+          "delta_chit": -0.4,
+          "delta_gamma_AB": 0.0,
+          "capacity_class": "deep",
+          "mapped_capacity_class": "shallow",
+          "k_frust": false,
+          "k_frust_preserved": true
+        }
+      }
+    },
+    {
+      "inputs": {
+        "chit": 0.0,
+        "gamma_AB": 2.0,
+        "k_frust": false,
+        "tau_obs": 1.0,
+        "gamut": {
+          "chit_range": [
+            -1.0,
+            1.0
+          ],
+          "gamma_AB_range": [
+            -1.0,
+            1.0
+          ]
+        },
+        "intent_id": "I4",
+        "notes": "positive gamma kept positive"
+      },
+      "outputs": {
+        "mapped": {
+          "chit": 0.0,
+          "gamma_AB": 1.0,
+          "k_frust": false
+        },
+        "sacrifice": {
+          "intent": "I4",
+          "preserved_invariant": "sign(gamma_AB)",
+          "invariant_preserved": true,
+          "delta_chit": 0.0,
+          "delta_gamma_AB": -1.0,
+          "original_gamma_AB_sign": 1,
+          "mapped_gamma_AB_sign": 1
+        }
+      }
+    },
+    {
+      "inputs": {
+        "chit": 0.0,
+        "gamma_AB": 0.5,
+        "k_frust": false,
+        "tau_obs": 1.0,
+        "gamut": {
+          "chit_range": [
+            -1.0,
+            1.0
+          ],
+          "gamma_AB_range": [
+            -1.0,
+            -0.1
+          ]
+        },
+        "intent_id": "I4",
+        "notes": "sign flip flagged"
+      },
+      "outputs": {
+        "mapped": {
+          "chit": 0.0,
+          "gamma_AB": -0.1,
+          "k_frust": false
+        },
+        "sacrifice": {
+          "intent": "I4",
+          "preserved_invariant": "sign(gamma_AB)",
+          "invariant_preserved": false,
+          "delta_chit": 0.0,
+          "delta_gamma_AB": -0.6,
+          "original_gamma_AB_sign": 1,
+          "mapped_gamma_AB_sign": -1
+        }
+      }
+    },
+    {
+      "inputs": {
+        "chit": 0.5,
+        "gamma_AB": 0.0,
+        "k_frust": false,
+        "tau_obs": 1.0,
+        "gamut": {
+          "chit_range": [
+            -1.0,
+            1.0
+          ],
+          "gamma_AB_range": [
+            -1.0,
+            1.0
+          ]
+        },
+        "intent_id": "I5",
+        "notes": "regime preserved (c_near_s)"
+      },
+      "outputs": {
+        "mapped": {
+          "chit": 0.5,
+          "gamma_AB": 0.0,
+          "k_frust": false
+        },
+        "sacrifice": {
+          "intent": "I5",
+          "delta_chit": 0.0,
+          "delta_gamma_AB": 0.0,
+          "regime_preserved": true,
+          "original_regime": "c_near_s",
+          "mapped_regime": "c_near_s",
+          "preserved_invariant": "regime_label",
+          "invariant_preserved": true
+        }
+      }
+    },
+    {
+      "inputs": {
+        "chit": 2.0,
+        "gamma_AB": 0.0,
+        "k_frust": false,
+        "tau_obs": 1.0,
+        "gamut": {
+          "chit_range": [
+            -0.5,
+            0.5
+          ],
+          "gamma_AB_range": [
+            -1.0,
+            1.0
+          ]
+        },
+        "intent_id": "I5",
+        "notes": "regime broken (deep_c \u2192 c_near_s)"
+      },
+      "outputs": {
+        "mapped": {
+          "chit": 0.5,
+          "gamma_AB": 0.0,
+          "k_frust": false
+        },
+        "sacrifice": {
+          "intent": "I5",
+          "delta_chit": -1.5,
+          "delta_gamma_AB": 0.0,
+          "regime_preserved": false,
+          "original_regime": "deep_c",
+          "mapped_regime": "c_near_s",
+          "preserved_invariant": "regime_label",
+          "invariant_preserved": false
+        }
+      }
+    }
   ]
 }

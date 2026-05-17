@@ -30,10 +30,12 @@ import jax.numpy as jnp
 
 from mpa_scale_solver import jax_core, gfdr_model
 from mpa_scale_solver.flow import flow as flow_op
+from mpa_scale_solver.operations import intent_map as intent_map_op
 from mpa_scale_solver.sidecar import round_key as sidecar_round_key
 from mpa_scale_solver.types import (
     CanonicalPoint,
     CanonicalState,
+    GamutSpec,
     OperatingPoint,
     ScalingRule,
     TangentFlowField,
@@ -704,6 +706,98 @@ def cases_flow() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Session 6 — intent algebra cross-language JSON parity
+# ---------------------------------------------------------------------------
+#
+# Not bit-identity in the math-primitive sense (intent_map is pure
+# arithmetic dispatch, no libm); this is a *schema parity* check. Python
+# is the producer of sacrifice records in the wrapped-variant path
+# (session 7); Rust deserializes Python's sac-dict JSON into
+# `SacrificeRecord` and asserts field-by-field agreement.
+#
+# Asymmetric parity by design: Python's sac dict contains a
+# `preserved_invariant` STRING key (stored). Rust's `SacrificeRecord`
+# makes that field a derived method (`.preserved_invariant()`) — the
+# string is statically determined by the `IntentDiagnostics` variant
+# per the BLOCK_IN-prep rationale. serde silently drops the unknown
+# field on Python→Rust read. Rust→Python round-trip would lose the
+# key; if a future consumer ever needs the symmetric path, add a
+# custom serializer on SacrificeRecord (the BLOCK_IN note flags this
+# option).
+
+
+def _sacrifice_case(
+    chit: float, gamma_AB: float, k_frust: bool,
+    chit_range: tuple[float, float], gamma_AB_range: tuple[float, float],
+    intent_id: str,
+    notes: str,
+) -> dict:
+    state = CanonicalState(chit=chit, gamma_AB=gamma_AB, k_frust=k_frust)
+    gamut = GamutSpec(chit_range=chit_range, gamma_AB_range=gamma_AB_range)
+    mapped, sac = intent_map_op(state, 1.0, gamut, intent_id)
+    # Normalize the sac dict for JSON: tuples → lists.
+    sac_json = dict(sac)
+    if "out_of_gamut_axes" in sac_json:
+        sac_json["out_of_gamut_axes"] = list(sac_json["out_of_gamut_axes"])
+    return {
+        "inputs": {
+            "chit": chit, "gamma_AB": gamma_AB, "k_frust": k_frust,
+            "tau_obs": 1.0,
+            "gamut": {
+                "chit_range": list(chit_range),
+                "gamma_AB_range": list(gamma_AB_range),
+            },
+            "intent_id": intent_id,
+            "notes": notes,
+        },
+        "outputs": {
+            "mapped": {
+                "chit": mapped.chit,
+                "gamma_AB": mapped.gamma_AB,
+                "k_frust": mapped.k_frust,
+            },
+            "sacrifice": sac_json,
+        },
+    }
+
+
+def cases_sacrifice_record() -> list[dict]:
+    return [
+        # I1 — regime ∧ sign(γ) ∧ k_frust
+        _sacrifice_case(2.0, 0.3, False, (-1.0, 1.0), (-1.0, 1.0),
+                        "I1", "deep_c preserved on unit gamut"),
+        _sacrifice_case(2.0, 0.0, False, (-0.5, 0.5), (-1.0, 1.0),
+                        "I1", "regime unreachable — invariant breaks"),
+        _sacrifice_case(0.0, 0.5, False, (-1.0, 1.0), (-1.0, -0.1),
+                        "I1", "gamma sign flip"),
+        _sacrifice_case(2.0, 0.0, True, (-1.0, 1.0), (-1.0, 1.0),
+                        "I1", "k_frust propagates"),
+        # I2 — drive-faithful
+        _sacrifice_case(0.3, -0.2, False, (-1.0, 1.0), (-1.0, 1.0),
+                        "I2", "in-gamut passthrough"),
+        _sacrifice_case(2.0, 0.0, False, (-1.0, 1.0), (-1.0, 1.0),
+                        "I2", "chit out-of-gamut"),
+        _sacrifice_case(2.0, 2.0, False, (-1.0, 1.0), (-1.0, 1.0),
+                        "I2", "both axes out-of-gamut"),
+        # I3 — capacity_class ∧ k_frust
+        _sacrifice_case(0.9, 0.0, False, (-1.0, 1.0), (-1.0, 1.0),
+                        "I3", "deep preserved"),
+        _sacrifice_case(0.9, 0.0, False, (-0.5, 0.5), (-1.0, 1.0),
+                        "I3", "deep demoted to shallow"),
+        # I4 — sign(γ_AB)
+        _sacrifice_case(0.0, 2.0, False, (-1.0, 1.0), (-1.0, 1.0),
+                        "I4", "positive gamma kept positive"),
+        _sacrifice_case(0.0, 0.5, False, (-1.0, 1.0), (-1.0, -0.1),
+                        "I4", "sign flip flagged"),
+        # I5 — regime label
+        _sacrifice_case(0.5, 0.0, False, (-1.0, 1.0), (-1.0, 1.0),
+                        "I5", "regime preserved (c_near_s)"),
+        _sacrifice_case(2.0, 0.0, False, (-0.5, 0.5), (-1.0, 1.0),
+                        "I5", "regime broken (deep_c → c_near_s)"),
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -730,6 +824,8 @@ PRIMITIVES = {
     "gfdr_locus_residual": cases_gfdr_locus_residual,
     "sidecar_round_key": cases_sidecar_round_key,
     "flow": cases_flow,
+    # session 6 — operations.py intent algebra (schema parity, not bit-id)
+    "sacrifice_record": cases_sacrifice_record,
 }
 
 
