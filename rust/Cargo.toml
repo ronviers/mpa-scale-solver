@@ -1,0 +1,24 @@
+[package]
+name = "mpa-scale-solver"
+version = "0.1.0"
+edition = "2024"
+description = "MPA scale-management kernel — Rust port of mpa-scale-solver v5 Python. Per-seed reproducibility against the reference Python; jax_core.py is the math source."
+license = "MIT"
+
+[lib]
+name = "mpa_scale_solver"
+crate-type = ["rlib"]
+doctest = false  # math formulas in /// comments aren't runnable Rust
+
+[dependencies]
+# types.rs derives Serialize/Deserialize on the runtime dataclasses
+# mirroring mpa_scale_solver/types.py. serde_json::Value appears in
+# public field types (axes / extras / refinement / ambiguity_regions),
+# so serde_json is a runtime dep too.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

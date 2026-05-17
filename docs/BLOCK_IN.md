@@ -137,18 +137,104 @@ such re-opening per CLAUDE.md's no-eighth-operation rule.
 
 ---
 
-## §v6 — Native port (Rust or C++). Zero new features.
+## §v6 — Native port (Rust + WASM). Zero new features.
 
-**Goal.** One-shot consolidation. Language pick at session time:
-**Rust** if we want modern + memory-safe; **C++** if we want
-mpa-solver toolchain parity. Match the proven v5 Python under the
+**Language pick (2026-05-16):** **Rust**, browser is the load-bearing
+consumer per user direction. Rust → WASM via `wasm-bindgen` /
+`wasm-pack`; same Rust source produces pyo3-backed Python bindings so
+mpa-conform's `import mpa_scale_solver` keeps working unchanged.
+
+**Session log (in §v6 — deletes when v6 ships).**
+- *Session 1 (2026-05-16):* Toolchain bootstrapped (rustup + stable
+  1.95 + wasm32-unknown-unknown). `rust/` scaffolded (single crate;
+  workspace split deferred until bindings shake out). `src/math.rs`
+  ported from `mpa_scale_solver/jax_core.py` — all 12 primitives:
+  tangent_flow_substrate / banach_state / tangent_flow_canonical /
+  lookup_squared_distance / tangent_flow_canonical_inverse /
+  tangent_flow_inversion_residual / Laplace 2x2 covariance pair +
+  log evidence / caputo_flow / mlp_forward / learned_field_substrate.
+  `cargo build --release` (native rlib) and
+  `cargo build --release --target wasm32-unknown-unknown` both clean;
+  `cargo check --tests --all-targets` clean. Analytic sanity tests in
+  `rust/tests/math.rs` (round-trip identity, β=1 Caputo=Banach
+  exponential, 2x2 inverse identity, log-ratio clamp at degenerate
+  tau) — **17/17 pass** after MSVC VC Tools workload landed via
+  GUI Modify. Doctests disabled (`doctest = false` in Cargo.toml)
+  since the /// blocks carry math notation, not runnable Rust.
+- *Session 2 (2026-05-16):* Bit-identity test fixtures vs Python
+  landed. Emitter at `rust/tests/fixtures/emit_jax_core_reference.py`
+  walks all 12 `jax_core` primitives over a small input sweep (48
+  cases, 22 KB JSON), reading the Python output and writing
+  `rust/tests/fixtures/jax_core_reference.json`. The fixture is
+  committed; the emitter regenerates byte-identically when `jax_core`
+  hasn't changed. Rust integration test at `rust/tests/bit_identity.rs`
+  loads the JSON via `serde_json` (added as the first dev-dependency)
+  and asserts each Rust primitive in `src/math.rs` reproduces the
+  Python output within a per-primitive ULP budget: **LIBM = 4 ULPs**
+  for primitives composing a small number of libm calls
+  (tangent_flow_*, banach_state, lookup_squared_distance, laplace
+  covariances), **LIBM_WIDE = 16 ULPs** for primitives composing
+  many libm calls or sums whose JAX-pairwise vs Rust-sequential
+  reduction order can differ (caputo_flow, mlp_forward,
+  learned_field_substrate, laplace_log_evidence). A coverage-guard
+  test asserts the fixture lists all 12 primitives so the emitter
+  can't silently drop one on regeneration. **13/13 bit-identity
+  tests pass; 17/17 analytic tests still pass (30/30 total).**
+  Fixture-design note for next session: do NOT generate `target =
+  python_forward(candidate)` and then ask Rust to compute
+  `residual = (rust_forward(candidate) - target)^2` — the libm
+  cancellation makes Rust's residual ~1e-32 instead of Python's
+  exact 0, which is not a porting bug but does fail any ULP
+  tolerance. Specify all `(candidate, target)` pairs explicitly
+  so both implementations evaluate the same numerical inputs.
+- *Session 3 (2026-05-16):* Port `types.py` → `rust/src/types.rs`.
+  5 enums (`Direction`, `Gt`, `RegimeLabel`, `DisplayBand`,
+  `DispatchPath`) plus `Activation` re-exported from `math`.
+  17 structs mirroring the Python `@dataclass(frozen=True)` shapes
+  (`CanonicalState`, `SubstrateState`, `CanonicalPoint`,
+  `OperatingPoint`, `TranslationRule`, `LookupTableField`,
+  `ScalingRule`, `TangentFlowField`, `LearnedField`, `GamutSpec`,
+  `RegimeReading`, `Provenance`, `ValidationReport`,
+  `OperationOutput<T>`, `Posterior`, `SidecarKey`,
+  `InverseLookupSidecar`). **Naming divergence from Python:**
+  Python's `TranslationField` is the lookup-table struct; Rust uses
+  `LookupTableField` for the struct and `TranslationField` for the
+  tagged enum `{LookupTable, TangentFlow, Learned}` (Python's
+  `AnyTranslationField`), with serde `tag = "shape"` matching the
+  Python `.shape` field discriminator. `dict[str, Any]` payloads
+  (`axes` / `extras` / `refinement` / `ambiguity_regions`) →
+  `BTreeMap<String, serde_json::Value>` (ordered for byte-stable
+  serialization). `dict[str, float]` (`observables`) →
+  `BTreeMap<String, f64>`. `SidecarKey` is a `[u64; 3]` newtype
+  wrapping `f64::to_bits` of the rounded floats, with a custom
+  `Serialize`/`Deserialize` to a `':'`-joined string so it works as
+  a JSON map key (JSON requires string keys); chosen as the thin
+  minimal default — `sidecar.rs` is free to pick a Python-parity
+  wire format if cross-language sidecar I/O lands. `_repr_html_` /
+  `__repr__` overrides are Python display-only (Jupyter / REPL)
+  and do not port. `serde` + `serde_json` promoted from dev-deps
+  to runtime deps. New smoke test at `rust/tests/types_smoke.rs`
+  (18 tests): constructs every public type, round-trips via
+  `serde_json`, asserts equality — catches derive misconfiguration
+  and validates the `TranslationField` enum's `shape` tag.
+  **48/48 Rust tests pass** (13 bit-identity + 17 math + 18 types
+  smoke); Python 392/392 still green; `cargo build --release
+  --target wasm32-unknown-unknown` still clean. Cross-language
+  JSON parity (Python writes → Rust reads, field-by-field equality)
+  remains deferred — it lands when the first module with actual
+  JSON I/O ports (`sidecar.py` or `mcp_server.py`); `types.py`
+  itself has no JSON producers in the Python.
+
+**Goal.** One-shot consolidation. Match the proven v5 Python under the
 per-seed reproducibility discipline. Free to parallelize aggressively
-(Rayon / OpenMP / GPU); Python's single-thread constraints do NOT
-carry forward. WASM bindings produced as part of the same step if
-browser-side execution becomes load-bearing.
+(Rayon / WASM web-workers / GPU); Python's single-thread constraints
+do NOT carry forward. WASM bindings are first-class (mpa-auditor
+consumes).
 
 **Capabilities to port (exactly the v5 Python surface).**
 
+- ~~Math primitives (`jax_core.py`)~~ — landed session 1 at
+  `rust/src/math.rs`.
 - Seven operations + `flow` + wrapped variants.
 - All translation-field shapes (lookup_table, tangent_flow, learned).
 - Banach substrate + sidecar + InverseLookupSidecar dispatch.
@@ -226,14 +312,44 @@ capability lands in v5 first via a v5.x release.
 
 **Open / watch.**
 
-- Language pick: Rust vs C++. Match mpa-solver (C++) for toolchain
-  reuse, OR commit to Rust for modernness + memory safety. User call
-  at session time, informed by what v5's Python ergonomics actually
-  needed.
-- WASM bindings: produce in this session if any browser-side consumer
-  has materialized by then. Skip otherwise — the inverse-lookup-table
-  sidecar pattern already sidesteps browser-side scale-solver
-  execution.
+- ~~Language pick: Rust vs C++.~~ Rust, settled session 1.
+- ~~WASM bindings: produce if browser-side consumer materializes.~~
+  Settled session 1: WASM is load-bearing (browser is the target).
+- ~~MSVC linker for `cargo test`.~~ Resolved session 1 via GUI
+  Modify (memory: `feedback_msvc_workload_gui_install.md`).
+- ~~Bit-identity test fixtures vs Python (math.rs).~~ Resolved
+  session 2 — fixture + Rust integration test green; per-primitive
+  ULP budgets documented in `rust/tests/bit_identity.rs`. The v6
+  acceptance "byte-identical for deterministic ops" check is
+  satisfied at the math.rs layer.
+- ~~Port types.py → types.rs.~~ Resolved session 3 — 17 structs +
+  5 enums + `TranslationField` tagged enum + `SidecarKey` newtype.
+  Smoke test (`rust/tests/types_smoke.rs`) covers serde round-trip
+  on every public type and the `shape`-tag discriminator on
+  `TranslationField`.
+- **Cross-language JSON parity for shape-bearing types.** The
+  types.rs serde round-trip is Rust-internal. Cross-language
+  parity (a Python-emitted JSON for a `LearnedField` /
+  `OperationOutput` / `InverseLookupSidecar` instance deserializes
+  byte-identically into Rust) is unproven and lands with whichever
+  module ports first that actually serializes the relevant type to
+  JSON — `sidecar.py` for `InverseLookupSidecar`, `mcp_server.py`
+  for `OperationOutput<T>` over the tool responses. The
+  `SidecarKey` ':'-joined-bits wire format and the `gamma_AB`
+  schema-field name preservation are the two design decisions
+  that will need to either match the future Python producer or
+  trigger a Python-side renormalize before merging.
+- **Next porting target: `operations.py`.** 65 KB Python; carries
+  the seven wrapped variants, the `method` dispatch table for
+  `forward_sweep_invert`, the sidecar dispatch fast path, and the
+  five intent handlers. The bit-identity infrastructure extends
+  naturally — add per-operation fixture entries to the emitter,
+  add `#[test]` functions in `bit_identity.rs`. The coverage-guard
+  list in `bit_identity.rs` will need its expected-primitive list
+  extended. The lessons from session 2 (specify `(candidate,
+  target)` pairs explicitly; do not generate `target` from one
+  implementation) apply with extra weight here — operations.py
+  has many more chained primitives where libm cancellation matters.
 - L-BFGS implementation choice for the learned-field inversion path:
   v5 uses scipy's L-BFGS-B (well-tested, default tolerances). v6
   picks a native optimizer (Rust `argmin`, C++ `dlib` or

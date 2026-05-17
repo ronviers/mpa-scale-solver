@@ -1,0 +1,1177 @@
+{
+  "tangent_flow_substrate": [
+    {
+      "inputs": {
+        "chit": 1.234,
+        "gamma_ab": 2.345,
+        "delta_chit": 0.4,
+        "delta_gamma": 0.6,
+        "tau_obs": 3.7,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "chit": 1.7573331278600715,
+        "gamma_ab": 5.141192691452699
+      }
+    },
+    {
+      "inputs": {
+        "chit": 1.0,
+        "gamma_ab": 2.0,
+        "delta_chit": 0.5,
+        "delta_gamma": 0.3,
+        "tau_obs": 4.0,
+        "tau_obs_ref": 4.0
+      },
+      "outputs": {
+        "chit": 1.0,
+        "gamma_ab": 2.0
+      }
+    },
+    {
+      "inputs": {
+        "chit": 1.5,
+        "gamma_ab": 2.5,
+        "delta_chit": 0.3,
+        "delta_gamma": 0.7,
+        "tau_obs": 0.0,
+        "tau_obs_ref": 4.0
+      },
+      "outputs": {
+        "chit": 1.5,
+        "gamma_ab": 2.5
+      }
+    },
+    {
+      "inputs": {
+        "chit": 1.5,
+        "gamma_ab": 2.5,
+        "delta_chit": 0.3,
+        "delta_gamma": 0.7,
+        "tau_obs": 4.0,
+        "tau_obs_ref": 0.0
+      },
+      "outputs": {
+        "chit": 1.5,
+        "gamma_ab": 2.5
+      }
+    },
+    {
+      "inputs": {
+        "chit": 0.5,
+        "gamma_ab": 1.5,
+        "delta_chit": -0.3,
+        "delta_gamma": -0.4,
+        "tau_obs": 2.0,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "chit": 0.2920558458320164,
+        "gamma_ab": 1.1367874248827985
+      }
+    },
+    {
+      "inputs": {
+        "chit": 1.0,
+        "gamma_ab": 2.0,
+        "delta_chit": 0.2,
+        "delta_gamma": 0.5,
+        "tau_obs": 100.0,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "chit": 1.9210340371976184,
+        "gamma_ab": 20.0
+      }
+    }
+  ],
+  "banach_state": [
+    {
+      "inputs": {
+        "chit_0": 1.5,
+        "gamma_ab_0": 2.5,
+        "lambda_chit": 0.1,
+        "lambda_gamma": 0.2,
+        "nu": 1.0
+      },
+      "outputs": {
+        "chit": 1.3572561270539394,
+        "gamma_ab": 2.0468268826949547
+      }
+    },
+    {
+      "inputs": {
+        "chit_0": 1.5,
+        "gamma_ab_0": 2.5,
+        "lambda_chit": 0.1,
+        "lambda_gamma": 0.2,
+        "nu": 0.0
+      },
+      "outputs": {
+        "chit": 1.5,
+        "gamma_ab": 2.5
+      }
+    },
+    {
+      "inputs": {
+        "chit_0": 1.0,
+        "gamma_ab_0": 1.0,
+        "lambda_chit": 0.5,
+        "lambda_gamma": 0.7,
+        "nu": 10.0
+      },
+      "outputs": {
+        "chit": 0.006737946999085467,
+        "gamma_ab": 0.0009118819655545162
+      }
+    },
+    {
+      "inputs": {
+        "chit_0": 1.0,
+        "gamma_ab_0": 2.0,
+        "lambda_chit": 0.0,
+        "lambda_gamma": 0.0,
+        "nu": 5.0
+      },
+      "outputs": {
+        "chit": 1.0,
+        "gamma_ab": 2.0
+      }
+    },
+    {
+      "inputs": {
+        "chit_0": 2.0,
+        "gamma_ab_0": 3.0,
+        "lambda_chit": 1.3,
+        "lambda_gamma": 0.4,
+        "nu": 0.5
+      },
+      "outputs": {
+        "chit": 1.044091553522032,
+        "gamma_ab": 2.4561922592339456
+      }
+    }
+  ],
+  "tangent_flow_canonical": [
+    {
+      "inputs": {
+        "chit_0": 1.0,
+        "gamma_ab_0": 2.0,
+        "delta_chit": 0.3,
+        "delta_gamma": 0.4,
+        "nu": 1.5,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "chit": 1.1216395324324493,
+        "gamma_ab": 2.352158045049347
+      }
+    },
+    {
+      "inputs": {
+        "chit_0": 1.0,
+        "gamma_ab_0": 2.0,
+        "delta_chit": 0.3,
+        "delta_gamma": 0.4,
+        "nu": 1.0,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "chit": 1.0,
+        "gamma_ab": 2.0
+      }
+    },
+    {
+      "inputs": {
+        "chit_0": 1.0,
+        "gamma_ab_0": 2.0,
+        "delta_chit": 0.3,
+        "delta_gamma": 0.4,
+        "nu": 0.0,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "chit": 1.0,
+        "gamma_ab": 2.0
+      }
+    },
+    {
+      "inputs": {
+        "chit_0": 1.234,
+        "gamma_ab_0": 2.345,
+        "delta_chit": -0.2,
+        "delta_gamma": 0.8,
+        "nu": 5.0,
+        "tau_obs_ref": 2.0
+      },
+      "outputs": {
+        "chit": 1.050741853625169,
+        "gamma_ab": 4.880843178393482
+      }
+    }
+  ],
+  "lookup_squared_distance": [
+    {
+      "inputs": {
+        "query_chit": 0.0,
+        "query_gamma": 0.0,
+        "field_chits": [
+          3.0,
+          0.0,
+          -2.0
+        ],
+        "field_gammas": [
+          4.0,
+          0.0,
+          1.0
+        ],
+        "field_taus": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "has_tau": [
+          false,
+          false,
+          false
+        ],
+        "tau_obs": 1.0,
+        "tau_obs_weight": 1.0
+      },
+      "outputs": {
+        "d2": [
+          25.0,
+          0.0,
+          5.0
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "query_chit": 0.0,
+        "query_gamma": 0.0,
+        "field_chits": [
+          0.0,
+          0.0
+        ],
+        "field_gammas": [
+          0.0,
+          0.0
+        ],
+        "field_taus": [
+          2.0,
+          3.0
+        ],
+        "has_tau": [
+          true,
+          false
+        ],
+        "tau_obs": 1.0,
+        "tau_obs_weight": 3.0
+      },
+      "outputs": {
+        "d2": [
+          1.441359041754604,
+          0.0
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "query_chit": 0.5,
+        "query_gamma": 0.5,
+        "field_chits": [
+          1.0,
+          0.0,
+          -0.5,
+          0.25
+        ],
+        "field_gammas": [
+          0.0,
+          1.0,
+          0.5,
+          -0.25
+        ],
+        "field_taus": [
+          0.5,
+          2.0,
+          1.0,
+          4.0
+        ],
+        "has_tau": [
+          true,
+          true,
+          true,
+          true
+        ],
+        "tau_obs": 2.0,
+        "tau_obs_weight": 0.5
+      },
+      "outputs": {
+        "d2": [
+          1.4609060278364028,
+          0.5,
+          1.2402265069591007,
+          0.8652265069591007
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "query_chit": 1.0,
+        "query_gamma": 1.0,
+        "field_chits": [
+          1.0,
+          0.0
+        ],
+        "field_gammas": [
+          1.0,
+          0.0
+        ],
+        "field_taus": [
+          1.0,
+          1.0
+        ],
+        "has_tau": [
+          true,
+          false
+        ],
+        "tau_obs": 0.0,
+        "tau_obs_weight": 1.0
+      },
+      "outputs": {
+        "d2": [
+          0.0,
+          2.0
+        ]
+      }
+    }
+  ],
+  "tangent_flow_canonical_inverse": [
+    {
+      "inputs": {
+        "substrate_chit": 1.7573331278600715,
+        "substrate_gamma_ab": 5.141192691452699,
+        "delta_chit": 0.4,
+        "delta_gamma": 0.6,
+        "tau_obs": 3.7,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "chit": 1.234,
+        "gamma_ab": 2.345
+      }
+    },
+    {
+      "inputs": {
+        "substrate_chit": 1.0,
+        "substrate_gamma_ab": 2.0,
+        "delta_chit": 0.5,
+        "delta_gamma": 0.3,
+        "tau_obs": 4.0,
+        "tau_obs_ref": 4.0
+      },
+      "outputs": {
+        "chit": 1.0,
+        "gamma_ab": 2.0
+      }
+    },
+    {
+      "inputs": {
+        "substrate_chit": 1.5,
+        "substrate_gamma_ab": 2.5,
+        "delta_chit": 0.3,
+        "delta_gamma": 0.7,
+        "tau_obs": 0.0,
+        "tau_obs_ref": 4.0
+      },
+      "outputs": {
+        "chit": 1.5,
+        "gamma_ab": 2.5
+      }
+    },
+    {
+      "inputs": {
+        "substrate_chit": 0.2920558458320164,
+        "substrate_gamma_ab": 1.1367874248827985,
+        "delta_chit": -0.3,
+        "delta_gamma": -0.4,
+        "tau_obs": 2.0,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "chit": 0.5,
+        "gamma_ab": 1.5
+      }
+    },
+    {
+      "inputs": {
+        "substrate_chit": 1.9210340371976184,
+        "substrate_gamma_ab": 20.0,
+        "delta_chit": 0.2,
+        "delta_gamma": 0.5,
+        "tau_obs": 100.0,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "chit": 1.0,
+        "gamma_ab": 2.0
+      }
+    }
+  ],
+  "tangent_flow_inversion_residual": [
+    {
+      "inputs": {
+        "candidate_chit": 1.0,
+        "candidate_gamma": 2.0,
+        "target_substrate_chit": 5.0,
+        "target_substrate_gamma": 5.0,
+        "delta_chit": 0.2,
+        "delta_gamma": 0.3,
+        "tau_obs": 2.0,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "residual": 21.350160630804083
+      }
+    },
+    {
+      "inputs": {
+        "candidate_chit": 1.5,
+        "candidate_gamma": 2.5,
+        "target_substrate_chit": 1.0,
+        "target_substrate_gamma": 2.0,
+        "delta_chit": 0.3,
+        "delta_gamma": 0.7,
+        "tau_obs": 0.0,
+        "tau_obs_ref": 4.0
+      },
+      "outputs": {
+        "residual": 0.5
+      }
+    },
+    {
+      "inputs": {
+        "candidate_chit": 0.5,
+        "candidate_gamma": 1.5,
+        "target_substrate_chit": 2.7,
+        "target_substrate_gamma": 3.1,
+        "delta_chit": -0.4,
+        "delta_gamma": 0.5,
+        "tau_obs": 3.0,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "residual": 7.21859695139533
+      }
+    },
+    {
+      "inputs": {
+        "candidate_chit": 2.0,
+        "candidate_gamma": -1.0,
+        "target_substrate_chit": 1.0,
+        "target_substrate_gamma": -2.0,
+        "delta_chit": 0.1,
+        "delta_gamma": 0.2,
+        "tau_obs": 1.5,
+        "tau_obs_ref": 1.5
+      },
+      "outputs": {
+        "residual": 2.0
+      }
+    }
+  ],
+  "laplace_covariance_from_jacobian": [
+    {
+      "inputs": {
+        "jacobian": [
+          [
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            1.0
+          ]
+        ],
+        "noise_variance": 0.25
+      },
+      "outputs": {
+        "covariance": [
+          [
+            0.25,
+            0.0
+          ],
+          [
+            0.0,
+            0.25
+          ]
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "jacobian": [
+          [
+            1.0,
+            0.5
+          ],
+          [
+            0.0,
+            2.0
+          ],
+          [
+            -0.5,
+            1.0
+          ]
+        ],
+        "noise_variance": 1.0
+      },
+      "outputs": {
+        "covariance": [
+          [
+            0.8,
+            0.0
+          ],
+          [
+            0.0,
+            0.19047619047619047
+          ]
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "jacobian": [
+          [
+            2.0,
+            1.0
+          ],
+          [
+            1.0,
+            2.0
+          ],
+          [
+            -1.0,
+            1.0
+          ],
+          [
+            0.5,
+            -0.5
+          ]
+        ],
+        "noise_variance": 0.1
+      },
+      "outputs": {
+        "covariance": [
+          [
+            0.019841269841269844,
+            -0.00873015873015873
+          ],
+          [
+            -0.00873015873015873,
+            0.01984126984126984
+          ]
+        ]
+      }
+    }
+  ],
+  "laplace_covariance_from_hessian": [
+    {
+      "inputs": {
+        "hessian": [
+          [
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            1.0
+          ]
+        ],
+        "noise_variance": 1.0
+      },
+      "outputs": {
+        "covariance": [
+          [
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            1.0
+          ]
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "hessian": [
+          [
+            2.0,
+            0.5
+          ],
+          [
+            0.5,
+            3.0
+          ]
+        ],
+        "noise_variance": 0.25
+      },
+      "outputs": {
+        "covariance": [
+          [
+            0.13043478260869565,
+            -0.021739130434782608
+          ],
+          [
+            -0.021739130434782608,
+            0.08695652173913043
+          ]
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "hessian": [
+          [
+            4.0,
+            -1.0
+          ],
+          [
+            -1.0,
+            2.0
+          ]
+        ],
+        "noise_variance": 0.5
+      },
+      "outputs": {
+        "covariance": [
+          [
+            0.14285714285714285,
+            0.07142857142857142
+          ],
+          [
+            0.07142857142857142,
+            0.2857142857142857
+          ]
+        ]
+      }
+    }
+  ],
+  "caputo_flow": [
+    {
+      "inputs": {
+        "chit_0": 1.0,
+        "gamma_ab_0": 2.0,
+        "lambda_chit": 0.3,
+        "lambda_gamma": 0.4,
+        "nu": 1.5,
+        "prony_amplitudes": [
+          1.0
+        ],
+        "prony_decays": [
+          1.0
+        ]
+      },
+      "outputs": {
+        "chit": 0.6376281516217733,
+        "gamma_ab": 1.0976232721880528
+      }
+    },
+    {
+      "inputs": {
+        "chit_0": 1.0,
+        "gamma_ab_0": 1.0,
+        "lambda_chit": 0.3,
+        "lambda_gamma": 0.4,
+        "nu": 1.5,
+        "prony_amplitudes": [
+          0.4,
+          0.6
+        ],
+        "prony_decays": [
+          1.0,
+          2.5
+        ]
+      },
+      "outputs": {
+        "chit": 0.44984274106371924,
+        "gamma_ab": 0.3534027505266685
+      }
+    },
+    {
+      "inputs": {
+        "chit_0": 2.0,
+        "gamma_ab_0": 1.5,
+        "lambda_chit": 0.5,
+        "lambda_gamma": 0.7,
+        "nu": 2.0,
+        "prony_amplitudes": [
+          0.25,
+          0.25,
+          0.25,
+          0.25
+        ],
+        "prony_decays": [
+          0.5,
+          1.0,
+          2.0,
+          4.0
+        ]
+      },
+      "outputs": {
+        "chit": 0.5640305115047113,
+        "gamma_ab": 0.30288382277801884
+      }
+    },
+    {
+      "inputs": {
+        "chit_0": 1.0,
+        "gamma_ab_0": 1.0,
+        "lambda_chit": 0.3,
+        "lambda_gamma": 0.4,
+        "nu": 0.0,
+        "prony_amplitudes": [
+          0.5,
+          0.5
+        ],
+        "prony_decays": [
+          1.0,
+          2.0
+        ]
+      },
+      "outputs": {
+        "chit": 1.0,
+        "gamma_ab": 1.0
+      }
+    }
+  ],
+  "mlp_forward": [
+    {
+      "inputs": {
+        "x": [
+          1.0,
+          1.0
+        ],
+        "weights": [
+          {
+            "w": [
+              [
+                2.0,
+                0.0
+              ],
+              [
+                0.0,
+                3.0
+              ]
+            ],
+            "b": [
+              0.5,
+              -0.5
+            ]
+          }
+        ],
+        "activation": "tanh"
+      },
+      "outputs": {
+        "y": [
+          2.5,
+          2.5
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "x": [
+          0.5,
+          0.5
+        ],
+        "weights": [
+          {
+            "w": [
+              [
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0
+              ]
+            ],
+            "b": [
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "w": [
+              [
+                1.0,
+                1.0
+              ]
+            ],
+            "b": [
+              0.0
+            ]
+          }
+        ],
+        "activation": "tanh"
+      },
+      "outputs": {
+        "y": [
+          0.9242343145200196
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "x": [
+          -0.5,
+          1.0
+        ],
+        "weights": [
+          {
+            "w": [
+              [
+                1.0,
+                1.0
+              ],
+              [
+                0.5,
+                -0.5
+              ]
+            ],
+            "b": [
+              0.1,
+              -0.1
+            ]
+          },
+          {
+            "w": [
+              [
+                1.0,
+                -1.0
+              ]
+            ],
+            "b": [
+              0.2
+            ]
+          }
+        ],
+        "activation": "relu"
+      },
+      "outputs": {
+        "y": [
+          0.8
+        ]
+      }
+    },
+    {
+      "inputs": {
+        "x": [
+          0.3,
+          -0.2,
+          0.7
+        ],
+        "weights": [
+          {
+            "w": [
+              [
+                0.5,
+                0.1,
+                -0.2
+              ],
+              [
+                0.1,
+                0.4,
+                0.3
+              ],
+              [
+                -0.1,
+                0.2,
+                0.1
+              ]
+            ],
+            "b": [
+              0.05,
+              -0.05,
+              0.0
+            ]
+          },
+          {
+            "w": [
+              [
+                0.7,
+                0.2,
+                -0.1
+              ],
+              [
+                0.1,
+                -0.3,
+                0.5
+              ]
+            ],
+            "b": [
+              0.0,
+              0.1
+            ]
+          },
+          {
+            "w": [
+              [
+                1.0,
+                -1.0
+              ]
+            ],
+            "b": [
+              0.0
+            ]
+          }
+        ],
+        "activation": "tanh"
+      },
+      "outputs": {
+        "y": [
+          -0.021155205066216855
+        ]
+      }
+    }
+  ],
+  "learned_field_substrate": [
+    {
+      "inputs": {
+        "chit": 1.5,
+        "gamma_ab": 2.5,
+        "tau_obs": 4.0,
+        "tau_obs_ref": 2.0,
+        "weights": [
+          {
+            "w": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                1.0
+              ]
+            ],
+            "b": [
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "activation": "tanh"
+      },
+      "outputs": {
+        "chit": 1.5,
+        "gamma_ab": 3.1931471805599454
+      }
+    },
+    {
+      "inputs": {
+        "chit": 1.5,
+        "gamma_ab": 2.5,
+        "tau_obs": 0.0,
+        "tau_obs_ref": 4.0,
+        "weights": [
+          {
+            "w": [
+              [
+                1.0,
+                0.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0,
+                1.0
+              ]
+            ],
+            "b": [
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "activation": "tanh"
+      },
+      "outputs": {
+        "chit": 1.5,
+        "gamma_ab": 2.5
+      }
+    },
+    {
+      "inputs": {
+        "chit": 0.3,
+        "gamma_ab": 0.4,
+        "tau_obs": 2.0,
+        "tau_obs_ref": 1.0,
+        "weights": [
+          {
+            "w": [
+              [
+                0.5,
+                0.1,
+                -0.2
+              ],
+              [
+                0.1,
+                0.4,
+                0.3
+              ],
+              [
+                -0.1,
+                0.2,
+                0.5
+              ]
+            ],
+            "b": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "w": [
+              [
+                1.0,
+                0.5,
+                -0.3
+              ],
+              [
+                0.2,
+                1.0,
+                0.1
+              ]
+            ],
+            "b": [
+              0.05,
+              -0.05
+            ]
+          }
+        ],
+        "activation": "tanh"
+      },
+      "outputs": {
+        "chit": 0.17731567288673877,
+        "gamma_ab": 0.37615495123254633
+      }
+    },
+    {
+      "inputs": {
+        "chit": 0.5,
+        "gamma_ab": -0.3,
+        "tau_obs": 4.0,
+        "tau_obs_ref": 0.0,
+        "weights": [
+          {
+            "w": [
+              [
+                1.0,
+                0.5,
+                0.5
+              ],
+              [
+                -0.5,
+                1.0,
+                0.5
+              ]
+            ],
+            "b": [
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "w": [
+              [
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0
+              ]
+            ],
+            "b": [
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "activation": "relu"
+      },
+      "outputs": {
+        "chit": 0.35,
+        "gamma_ab": 0.0
+      }
+    }
+  ],
+  "laplace_log_evidence": [
+    {
+      "inputs": {
+        "residual_at_map": 0.0,
+        "hessian": [
+          [
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            1.0
+          ]
+        ],
+        "noise_variance": 1.0,
+        "n_obs": 4
+      },
+      "outputs": {
+        "log_evidence": -1.8378770664093453
+      }
+    },
+    {
+      "inputs": {
+        "residual_at_map": 0.5,
+        "hessian": [
+          [
+            2.0,
+            0.5
+          ],
+          [
+            0.5,
+            3.0
+          ]
+        ],
+        "noise_variance": 0.25,
+        "n_obs": 8
+      },
+      "outputs": {
+        "log_evidence": -3.229348043272994
+      }
+    },
+    {
+      "inputs": {
+        "residual_at_map": 1.5,
+        "hessian": [
+          [
+            4.0,
+            -1.0
+          ],
+          [
+            -1.0,
+            2.0
+          ]
+        ],
+        "noise_variance": 0.5,
+        "n_obs": 16
+      },
+      "outputs": {
+        "log_evidence": -10.486064275473456
+      }
+    }
+  ]
+}
