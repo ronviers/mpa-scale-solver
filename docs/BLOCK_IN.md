@@ -676,12 +676,30 @@ capability lands in v5 first via a v5.x release.
     `Posterior.mean` (`CanonicalState`), `covariance` (`[[f64; 2]; 2]`),
     `noise_variance`, `log_evidence` — all *computed* floats →
     `LIBM_WIDE` ULP tolerance, never bit-exact JSON storage.
-    Sole non-trivial dispatch question deferred to session-8-time:
-    `lookup_table_posterior`'s `k == 1` degenerate path (delta
-    posterior with noise-floor covariance) needs explicit handling.
-    One new bit-identity fixture (`operation_output_posterior`
-    mirroring `operation_output_regime_at`) extends the
-    wrapped-variant wire-parity coverage.
+    **Three small dispatch questions to settle at session-8-time:**
+    (a) `lookup_table_posterior`'s `k == 1` degenerate path returns
+    a delta posterior with noise-floor covariance — port literally
+    per `jax_ops.lookup_table_posterior` lines 378–392.
+    (b) Python's `np.argsort(residual_field)[:k]` for the top-k
+    selection is stable (ties broken by index); Rust's
+    `slice::sort_by` is unstable. Use a stable sort
+    (`Vec::sort_by_key` with `(residual, index)` tiebreak, or
+    `sort_by` with an explicit index secondary key) so the top-k
+    set is deterministic on ties — otherwise the softmax-weighted
+    moments can drift across Rust runs even for the same input.
+    (c) `Posterior.modes` is populated only when MAP ≠
+    posterior_mean (lookup-table path); Python uses tuple
+    equality (`(map.chit, map.gamma_AB) != (mean_chit, mean_gamma)`)
+    which is bit-equality on f64. Rust mirror: `if
+    map.chit.to_bits() != mean.chit.to_bits() || ...` to keep the
+    same emit-condition discipline. **`operation_output_posterior`
+    parity test** (category 2, schema parity per
+    `bit_identity.rs` module docstring) extends the wrapped-variant
+    wire coverage: `Posterior.mean` (CanonicalState — bit-exact
+    fields), `covariance` (`[[f64; 2]; 2]` — LIBM_WIDE ULP
+    tolerance per fixture-discipline rule),
+    `noise_variance` / `log_evidence` (computed floats —
+    LIBM_WIDE), `modes` / `notes` (structured, bit-exact).
   - *Session 9 — bindings.* `pyo3` + `wasm-bindgen`. This is the
     one that makes v6 actually shippable — mpa-conform's
     `import mpa_scale_solver` keeps working unchanged; mpa-auditor
@@ -751,8 +769,17 @@ capability lands in v5 first via a v5.x release.
    `jax_core.py`, `sensitivity.py`, `self_test.py`, and the
    `forward_sweep_invert` dispatch in `operations.py` as the port's
    reference.
-5. The relevant RFC-S sections + v9_receipts + cdv1_receipts entries.
-6. Prior version's release notes in
+5. [`../rust/tests/bit_identity.rs`](../rust/tests/bit_identity.rs)
+   **module docstring** — the four test categories (per-primitive
+   bit-identity, schema parity, digest-bytes parity, wire-format
+   parity) and the fixture-discipline rules. Required reading
+   before adding any cross-language parity test.
+6. [`SIDECAR_FORMAT.md`](SIDECAR_FORMAT.md) — the authoritative
+   sidecar wire-format spec at wire_version 1.0. Required reading
+   for session 9 (bindings); useful for session 8 (the posterior
+   wrapper takes a sidecar in the lookup-table path).
+7. The relevant RFC-S sections + v9_receipts + cdv1_receipts entries.
+8. Prior version's release notes in
    [`../README.md`](../README.md)
    § Session Log — the historical record this document doesn't carry.
 
