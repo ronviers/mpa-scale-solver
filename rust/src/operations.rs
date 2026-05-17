@@ -46,17 +46,18 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::math::{
-    Activation, MlpLayer, learned_field_substrate, lookup_squared_distance,
-    tangent_flow_canonical_inverse, tangent_flow_substrate,
+    Activation, MlpLayer, laplace_covariance_from_jacobian, learned_field_substrate,
+    lookup_squared_distance, slogdet_2x2, tangent_flow_canonical_inverse,
+    tangent_flow_forward_jacobian, tangent_flow_substrate,
 };
 use crate::optim::minimize_smooth_2d;
 use crate::provenance::make_provenance;
 use crate::sidecar::{DEFAULT_ROUNDING_DECIMALS, lookup_forward, lookup_inverse};
 use crate::types::{
     CanonicalState, CapacityClass, DispatchPath, DisplayBand, GamutSpec, InverseLookupSidecar,
-    IntentDiagnostics, IntentId, LearnedField, LookupTableField, OperationOutput, RegimeLabel,
-    RegimeReading, SacrificeRecord, SubstrateState, TangentFlowField, TranslationField,
-    TranslationRule,
+    IntentDiagnostics, IntentId, LearnedField, LookupTableField, OperationOutput, Posterior,
+    RegimeLabel, RegimeReading, SacrificeRecord, SubstrateState, TangentFlowField,
+    TranslationField, TranslationRule,
 };
 use crate::validation::{
     self as _validation, DriverProfileSummary, per_intent_cell_metric, aggregate_per_intent_metrics,
@@ -102,6 +103,18 @@ pub enum OperationError {
     /// RFC-S §3: I2 (drive-faithful) does not compose with adjusting
     /// intents. Mirrors Python's `ValueError("I2 ... does not compose ...")`.
     I2InComposition,
+    /// `forward_sweep_invert_posterior` dispatched on a `LookupTableField`
+    /// without the `canonical_grid` argument the brute-force inversion
+    /// needs. Mirrors Python's `ValueError("forward_sweep_invert_posterior
+    /// requires canonical_grid for lookup_table fields ...")`.
+    PosteriorRequiresCanonicalGrid,
+    /// `forward_sweep_invert_posterior` dispatched on a translation-field
+    /// shape that has no posterior implementation. Currently `LearnedField`
+    /// has no Laplace surface (the posterior would need MAP + Jacobian +
+    /// covariance through the MLP; deferred to v6.x if a consumer needs
+    /// it). Mirrors Python's `TypeError("unsupported translation field
+    /// type: LearnedField")`.
+    PosteriorUnsupportedFieldShape,
 }
 
 impl std::fmt::Display for OperationError {
@@ -138,6 +151,18 @@ impl std::fmt::Display for OperationError {
                 f,
                 "I2 (drive-faithful) does not compose with adjusting intents \
                  (RFC-S §3). Call intent_map(IntentId::I2) directly."
+            ),
+            Self::PosteriorRequiresCanonicalGrid => write!(
+                f,
+                "forward_sweep_invert_posterior requires canonical_grid for \
+                 lookup_table fields (the search grid the brute-force \
+                 inversion uses)."
+            ),
+            Self::PosteriorUnsupportedFieldShape => write!(
+                f,
+                "forward_sweep_invert_posterior: no posterior implementation \
+                 for this translation field shape (LearnedField has no Laplace \
+                 surface in v5; tangent_flow + lookup_table are supported)."
             ),
         }
     }
@@ -1808,6 +1833,332 @@ pub fn validate_driver_profile_wrapped(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Session 8 — Bayesian inversion (Laplace approximation) — BLOCK_IN cut b
+// ---------------------------------------------------------------------------
+//
+// Mirrors `mpa_scale_solver.operations.forward_sweep_invert_posterior` +
+// `_wrapped` and the underlying `jax_ops.tangent_flow_posterior` /
+// `lookup_table_posterior`. Single-mode Laplace: tangent-flow gets the
+// closed-form fast path (MAP exact, residual at MAP zero, covariance =
+// `noise_variance * inv(J^T J)`); lookup-table gets the softmax-weighted
+// top-k discrete moment estimate (no Hessian on a step-function residual).
+//
+// Per BLOCK_IN §v6 session 8:
+//   * `k == 1` lookup-table path returns a delta posterior with
+//     noise-floor covariance (one-line literal port of Python).
+//   * Top-k ranking uses a stable sort `(residual, index)` so ties break
+//     by index — Python's `np.argsort` is stable, Rust's `sort_by` is
+//     unstable so the tiebreak is explicit.
+//   * `Posterior.modes` is populated only when the MAP point differs from
+//     the posterior mean (lookup-table only); the comparison uses
+//     `f64::to_bits` equality to match Python's tuple equality on floats.
+
+/// Laplace-approximation posterior for tangent-flow inversion. Mirrors
+/// `jax_ops.tangent_flow_posterior`.
+///
+/// Fast-path: MAP is the exact closed-form inverse, residual at MAP is
+/// zero, Hessian at MAP is `(1/σ²) JᵀJ` where J is the forward-map
+/// Jacobian (session-8 primitive `math::tangent_flow_forward_jacobian`),
+/// and the posterior covariance is `σ² (JᵀJ)⁻¹`. Log evidence collapses
+/// to the noise-prior-only normalizer since the residual term vanishes.
+pub fn tangent_flow_posterior(
+    target: &SubstrateState,
+    field: &TangentFlowField,
+    tau_obs: f64,
+    noise_variance: f64,
+    k_frust: bool,
+) -> Posterior {
+    let s_chit = target
+        .observables
+        .get("substrate_chit")
+        .copied()
+        .unwrap_or(0.0);
+    let s_gamma = target
+        .observables
+        .get("substrate_gamma_AB")
+        .copied()
+        .unwrap_or(0.0);
+    let (map_chit, map_gamma) = tangent_flow_canonical_inverse(
+        s_chit,
+        s_gamma,
+        field.scaling.delta_chit,
+        field.scaling.delta_gamma,
+        tau_obs,
+        field.scaling.tau_obs_ref,
+    );
+    let map = CanonicalState {
+        chit: map_chit,
+        gamma_AB: map_gamma,
+        k_frust,
+    };
+
+    let jac =
+        tangent_flow_forward_jacobian(field.scaling.delta_gamma, tau_obs, field.scaling.tau_obs_ref);
+    let cov = laplace_covariance_from_jacobian(&jac[..], noise_variance)
+        .unwrap_or([[noise_variance, 0.0], [0.0, noise_variance]]);
+
+    // log p(y) at zero residual:
+    //   -0.5 * dim_y * log(2π σ²)
+    //   + 0.5 * dim_c * log(2π)
+    //   - 0.5 * log det((1/σ²) JᵀJ)
+    let dim_y = 2.0;
+    let dim_c = 2.0;
+    let jtj: [[f64; 2]; 2] = [
+        [
+            jac[0][0] * jac[0][0] + jac[1][0] * jac[1][0],
+            jac[0][0] * jac[0][1] + jac[1][0] * jac[1][1],
+        ],
+        [
+            jac[0][1] * jac[0][0] + jac[1][1] * jac[1][0],
+            jac[0][1] * jac[0][1] + jac[1][1] * jac[1][1],
+        ],
+    ];
+    let precision = [
+        [jtj[0][0] / noise_variance, jtj[0][1] / noise_variance],
+        [jtj[1][0] / noise_variance, jtj[1][1] / noise_variance],
+    ];
+    let (_sign, log_det_precision) = slogdet_2x2(&precision);
+    let two_pi = 2.0 * std::f64::consts::PI;
+    let log_evidence = -0.5 * dim_y * (two_pi * noise_variance).ln()
+        + 0.5 * dim_c * two_pi.ln()
+        - 0.5 * log_det_precision;
+
+    Posterior {
+        mean: map,
+        covariance: cov,
+        noise_variance,
+        log_evidence: Some(log_evidence),
+        modes: Vec::new(),
+        notes: vec!["laplace_from_closed_form_jacobian".to_string()],
+    }
+}
+
+/// Weighted-moment posterior for lookup-table inversion. Mirrors
+/// `jax_ops.lookup_table_posterior`.
+///
+/// Discrete grids have no meaningful Hessian (the residual is a step
+/// function over candidates), so the Laplace formula doesn't apply
+/// directly. Instead we treat the residual field as an unnormalized
+/// log-posterior `log p(c | y) ∝ -0.5 R(c) / σ²` and report the moments
+/// of the resulting discrete distribution, concentrated on the `top_k`
+/// lowest-residual candidates.
+pub fn lookup_table_posterior(
+    target: &SubstrateState,
+    field: &LookupTableField,
+    tau_obs: f64,
+    canonical_grid: &[[f64; 2]],
+    noise_variance: f64,
+    k_frust: bool,
+    score_fn: Option<&dyn Fn(&SubstrateState, &SubstrateState) -> f64>,
+    top_k: usize,
+) -> Result<Posterior, OperationError> {
+    // forward_sweep_invert wants the enum; the clone is bounded by the
+    // schema-fixed rule list and happens once per posterior call.
+    let field_enum = TranslationField::LookupTable(field.clone());
+    let inv = forward_sweep_invert(
+        target,
+        &field_enum,
+        tau_obs,
+        canonical_grid,
+        score_fn,
+        None,
+        Method::Auto,
+        true,
+    )?;
+    let residuals = inv
+        .residuals
+        .expect("Method::Auto + return_residuals=true on LookupTable populates residuals");
+
+    let n = residuals.len();
+    let k = top_k.clamp(1, n);
+
+    let map_with_kfrust = CanonicalState {
+        chit: inv.best_state.chit,
+        gamma_AB: inv.best_state.gamma_AB,
+        k_frust,
+    };
+
+    if k == 1 {
+        // Degenerate single-candidate case. Python adds a noise-floor on
+        // the diagonal so the posterior remains usable as a covariance.
+        return Ok(Posterior {
+            mean: map_with_kfrust,
+            covariance: [[noise_variance, 0.0], [0.0, noise_variance]],
+            noise_variance,
+            log_evidence: None,
+            modes: Vec::new(),
+            notes: vec!["lookup_table_grid_top_k=1_delta_with_noise_floor".to_string()],
+        });
+    }
+
+    // Stable top-k by (residual, index) — ties break by original index so
+    // the softmax-weighted moments are deterministic across Rust runs.
+    let mut indexed: Vec<(f64, usize)> = residuals.iter().copied().enumerate()
+        .map(|(i, r)| (r, i))
+        .collect();
+    indexed.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.cmp(&b.1))
+    });
+    let top: Vec<(f64, [f64; 2])> = indexed
+        .iter()
+        .take(k)
+        .map(|&(r, i)| (r, canonical_grid[i]))
+        .collect();
+
+    // log-weights = -0.5 * R / σ²; shift by max for numerical stability.
+    let nv_safe = noise_variance.max(1e-300);
+    let log_w: Vec<f64> = top.iter().map(|&(r, _)| -0.5 * r / nv_safe).collect();
+    let log_w_max = log_w.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let raw_w: Vec<f64> = log_w.iter().map(|&lw| (lw - log_w_max).exp()).collect();
+    let raw_sum: f64 = raw_w.iter().copied().sum();
+    let weights: Vec<f64> = raw_w.iter().map(|w| w / raw_sum).collect();
+
+    let mean_chit: f64 = weights
+        .iter()
+        .zip(top.iter())
+        .map(|(&w, &(_, p))| w * p[0])
+        .sum();
+    let mean_gamma: f64 = weights
+        .iter()
+        .zip(top.iter())
+        .map(|(&w, &(_, p))| w * p[1])
+        .sum();
+
+    let cov_cc: f64 = weights
+        .iter()
+        .zip(top.iter())
+        .map(|(&w, &(_, p))| w * (p[0] - mean_chit).powi(2))
+        .sum();
+    let cov_cg: f64 = weights
+        .iter()
+        .zip(top.iter())
+        .map(|(&w, &(_, p))| w * (p[0] - mean_chit) * (p[1] - mean_gamma))
+        .sum();
+    let cov_gg: f64 = weights
+        .iter()
+        .zip(top.iter())
+        .map(|(&w, &(_, p))| w * (p[1] - mean_gamma).powi(2))
+        .sum();
+    let cov = [[cov_cc, cov_cg], [cov_cg, cov_gg]];
+
+    let posterior_mean = CanonicalState {
+        chit: mean_chit,
+        gamma_AB: mean_gamma,
+        k_frust,
+    };
+
+    // Python: `if (map_chit, map_gamma) != (mean_chit, mean_gamma)` — tuple
+    // equality is bit-equality on f64. Mirror exactly so the emit-condition
+    // discipline matches across languages.
+    let modes = if map_with_kfrust.chit.to_bits() != mean_chit.to_bits()
+        || map_with_kfrust.gamma_AB.to_bits() != mean_gamma.to_bits()
+    {
+        vec![map_with_kfrust]
+    } else {
+        Vec::new()
+    };
+
+    Ok(Posterior {
+        mean: posterior_mean,
+        covariance: cov,
+        noise_variance,
+        log_evidence: None,
+        modes,
+        notes: vec![format!("lookup_table_weighted_moments_top_k={k}")],
+    })
+}
+
+/// Bayesian inversion dispatcher — Python's
+/// `mpa_scale_solver.operations.forward_sweep_invert_posterior`.
+///
+/// Dispatches on field shape:
+///   * `TangentFlow` → closed-form fast path via `tangent_flow_posterior`.
+///     `canonical_grid` is ignored.
+///   * `LookupTable` → weighted-moment estimate via `lookup_table_posterior`.
+///     Requires `canonical_grid`.
+///   * `Learned` → no Laplace surface in v5 — returns
+///     `OperationError::PosteriorUnsupportedFieldShape` (Python raises
+///     `TypeError`).
+pub fn forward_sweep_invert_posterior(
+    target: &SubstrateState,
+    field: &TranslationField,
+    tau_obs: f64,
+    canonical_grid: Option<&[[f64; 2]]>,
+    noise_variance: f64,
+    k_frust: bool,
+    score_fn: Option<&dyn Fn(&SubstrateState, &SubstrateState) -> f64>,
+    top_k: usize,
+) -> Result<Posterior, OperationError> {
+    match field {
+        TranslationField::TangentFlow(tf) => Ok(tangent_flow_posterior(
+            target,
+            tf,
+            tau_obs,
+            noise_variance,
+            k_frust,
+        )),
+        TranslationField::LookupTable(lt) => {
+            let grid = canonical_grid.ok_or(OperationError::PosteriorRequiresCanonicalGrid)?;
+            lookup_table_posterior(
+                target,
+                lt,
+                tau_obs,
+                grid,
+                noise_variance,
+                k_frust,
+                score_fn,
+                top_k,
+            )
+        }
+        TranslationField::Learned(_) => Err(OperationError::PosteriorUnsupportedFieldShape),
+    }
+}
+
+/// Wrapped variant of `forward_sweep_invert_posterior`. Mirrors Python's
+/// `forward_sweep_invert_posterior_wrapped`. Validation reuses the
+/// `forward_sweep_invert` report shape on the MAP point — the canonical
+/// at MAP rides through the same asymptotic-closure gate as every other
+/// wrapped operation's canonical-state output. `round_trip_residual` is
+/// `None` (no forward-then-back is meaningful when the value is a
+/// posterior distribution rather than a point estimate).
+pub fn forward_sweep_invert_posterior_wrapped(
+    target: &SubstrateState,
+    field: &TranslationField,
+    tau_obs: f64,
+    canonical_grid: Option<&[[f64; 2]]>,
+    noise_variance: f64,
+    k_frust: bool,
+    score_fn: Option<&dyn Fn(&SubstrateState, &SubstrateState) -> f64>,
+    top_k: usize,
+) -> Result<OperationOutput<Posterior>, OperationError> {
+    let posterior = forward_sweep_invert_posterior(
+        target,
+        field,
+        tau_obs,
+        canonical_grid,
+        noise_variance,
+        k_frust,
+        score_fn,
+        top_k,
+    )?;
+    let report =
+        _validation::report_for_forward_sweep_invert(target, &posterior.mean, None, &[]);
+    let prov = make_provenance(
+        "forward_sweep_invert_posterior",
+        DispatchPath::DirectCompute,
+        None,
+        Vec::new(),
+    );
+    Ok(OperationOutput {
+        value: posterior,
+        validation: report,
+        provenance: prov,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3297,5 +3648,209 @@ mod tests {
         let a = regime_at_wrapped(&trivial_canonical(), 1.0);
         let b = regime_at_wrapped(&trivial_canonical(), 1.0);
         assert_eq!(provenance_hash(&a.provenance), provenance_hash(&b.provenance));
+    }
+
+    // -----------------------------------------------------------------
+    // Session 8 — posterior surface
+    // -----------------------------------------------------------------
+
+    fn lookup_field_three_rules() -> LookupTableField {
+        // Three rules at (0.5, -0.3), (0.8, 0.2), (-0.4, 0.4).
+        LookupTableField {
+            direction: Direction::Forward,
+            rule: vec![
+                rule("a", 0.5, -0.3, Some(1.0)),
+                rule("b", 0.8, 0.2, Some(1.0)),
+                rule("c", -0.4, 0.4, Some(1.0)),
+            ],
+            description: None,
+        }
+    }
+
+    #[test]
+    fn tangent_flow_posterior_map_matches_closed_form_inverse() {
+        // Recover canonical (1.2, 0.7) via the closed-form inverse — the
+        // MAP point should be exact (no grid).
+        let field = tangent_flow_field(0.3, 0.5);
+        let canonical = CanonicalState {
+            chit: 1.2,
+            gamma_AB: 0.7,
+            k_frust: false,
+        };
+        let s = apply_translation(
+            &CanonicalState { ..canonical.clone() },
+            &TranslationField::TangentFlow(field.clone()),
+            2.0,
+            DEFAULT_DOMAIN_DISTANCE_THRESHOLD,
+            1.0,
+        )
+        .unwrap();
+        let p = tangent_flow_posterior(&s, &field, 2.0, 1.0, false);
+        // MAP recovers (1.2, 0.7) at float64 precision.
+        assert!((p.mean.chit - 1.2).abs() < 1e-12);
+        assert!((p.mean.gamma_AB - 0.7).abs() < 1e-12);
+        // Covariance non-singular and symmetric.
+        assert!(p.covariance[0][0] > 0.0);
+        assert!(p.covariance[1][1] > 0.0);
+        assert_eq!(p.covariance[0][1], p.covariance[1][0]);
+        // Log evidence finite (residual at MAP is zero).
+        let le = p.log_evidence.expect("closed-form posterior emits log_evidence");
+        assert!(le.is_finite());
+        assert_eq!(p.notes, vec!["laplace_from_closed_form_jacobian".to_string()]);
+        assert!(p.modes.is_empty());
+    }
+
+    #[test]
+    fn tangent_flow_posterior_k_frust_propagates_to_map() {
+        let field = tangent_flow_field(0.0, 0.0);
+        let s = substrate_obs(0.5, -0.3, 1.0);
+        let p = tangent_flow_posterior(&s, &field, 1.0, 1.0, true);
+        assert!(p.mean.k_frust);
+    }
+
+    #[test]
+    fn tangent_flow_posterior_identity_jacobian_gives_isotropic_cov() {
+        // delta_gamma=0 → Jacobian = I → cov = sigma^2 * I.
+        let field = tangent_flow_field(0.0, 0.0);
+        let s = substrate_obs(0.5, -0.3, 1.0);
+        let p = tangent_flow_posterior(&s, &field, 1.0, 0.25, false);
+        assert!((p.covariance[0][0] - 0.25).abs() < 1e-12);
+        assert!((p.covariance[1][1] - 0.25).abs() < 1e-12);
+        assert!(p.covariance[0][1].abs() < 1e-12);
+    }
+
+    #[test]
+    fn lookup_table_posterior_k_eq_1_returns_delta_with_noise_floor() {
+        let field = lookup_field_three_rules();
+        // Substrate close to rule "a"'s canonical (chit=0.5, gamma=-0.3).
+        let s = substrate_obs(0.5, -0.3, 1.0);
+        let grid: Vec<[f64; 2]> = vec![[0.5, -0.3], [0.8, 0.2], [-0.4, 0.4]];
+        let p = lookup_table_posterior(&s, &field, 1.0, &grid, 0.04, false, None, 1).unwrap();
+        // Delta-posterior at MAP grid point.
+        assert_eq!(p.mean.chit, 0.5);
+        assert_eq!(p.mean.gamma_AB, -0.3);
+        // Noise-floor covariance on the diagonal; off-diagonal zero.
+        assert_eq!(p.covariance[0][0], 0.04);
+        assert_eq!(p.covariance[1][1], 0.04);
+        assert_eq!(p.covariance[0][1], 0.0);
+        assert_eq!(p.covariance[1][0], 0.0);
+        // No log_evidence on the discrete-grid path.
+        assert!(p.log_evidence.is_none());
+        assert!(p.modes.is_empty());
+        assert!(p.notes[0].starts_with("lookup_table_grid_top_k=1"));
+    }
+
+    #[test]
+    fn lookup_table_posterior_top_k_weighted_moments() {
+        let field = lookup_field_three_rules();
+        let s = substrate_obs(0.5, -0.3, 1.0);
+        let grid: Vec<[f64; 2]> = vec![[0.5, -0.3], [0.8, 0.2], [-0.4, 0.4]];
+        let p = lookup_table_posterior(&s, &field, 1.0, &grid, 1.0, false, None, 3).unwrap();
+        // Weighted moments fall inside the convex hull of the grid points.
+        assert!(p.mean.chit >= -0.4 && p.mean.chit <= 0.8);
+        assert!(p.mean.gamma_AB >= -0.3 && p.mean.gamma_AB <= 0.4);
+        // Covariance positive on the diagonal (multiple distinct support points).
+        assert!(p.covariance[0][0] > 0.0);
+        assert!(p.covariance[1][1] > 0.0);
+        // modes carries the MAP point if it differs from the weighted mean.
+        let map = (0.5_f64.to_bits(), (-0.3_f64).to_bits());
+        let mean = (p.mean.chit.to_bits(), p.mean.gamma_AB.to_bits());
+        if map != mean {
+            assert_eq!(p.modes.len(), 1);
+            assert_eq!(p.modes[0].chit, 0.5);
+            assert_eq!(p.modes[0].gamma_AB, -0.3);
+        } else {
+            assert!(p.modes.is_empty());
+        }
+        assert!(p.notes[0].starts_with("lookup_table_weighted_moments_top_k="));
+    }
+
+    #[test]
+    fn lookup_table_posterior_stable_tiebreak_on_residual() {
+        // Equidistant grid around the target: any tiebreak must be
+        // deterministic. Two back-to-back calls produce identical output.
+        let field = lookup_field_three_rules();
+        let s = substrate_obs(0.0, 0.0, 1.0);
+        let grid: Vec<[f64; 2]> = vec![[1.0, 1.0], [-1.0, -1.0], [1.0, -1.0], [-1.0, 1.0]];
+        let p1 = lookup_table_posterior(&s, &field, 1.0, &grid, 1.0, false, None, 4).unwrap();
+        let p2 = lookup_table_posterior(&s, &field, 1.0, &grid, 1.0, false, None, 4).unwrap();
+        assert_eq!(p1.mean.chit.to_bits(), p2.mean.chit.to_bits());
+        assert_eq!(p1.mean.gamma_AB.to_bits(), p2.mean.gamma_AB.to_bits());
+        assert_eq!(p1.covariance, p2.covariance);
+    }
+
+    #[test]
+    fn forward_sweep_invert_posterior_dispatches_per_shape() {
+        let field_tf = TranslationField::TangentFlow(tangent_flow_field(0.0, 0.0));
+        let field_lt = TranslationField::LookupTable(lookup_field_three_rules());
+        let s = substrate_obs(0.5, -0.3, 1.0);
+        let grid: Vec<[f64; 2]> = vec![[0.5, -0.3], [0.8, 0.2], [-0.4, 0.4]];
+
+        // TangentFlow: grid optional; closed-form path.
+        let p_tf = forward_sweep_invert_posterior(&s, &field_tf, 1.0, None, 1.0, false, None, 5)
+            .unwrap();
+        assert!(p_tf.log_evidence.is_some());
+
+        // LookupTable + grid: discrete path.
+        let p_lt = forward_sweep_invert_posterior(
+            &s,
+            &field_lt,
+            1.0,
+            Some(&grid),
+            1.0,
+            false,
+            None,
+            3,
+        )
+        .unwrap();
+        assert!(p_lt.log_evidence.is_none());
+    }
+
+    #[test]
+    fn forward_sweep_invert_posterior_lookup_without_grid_errors() {
+        let field = TranslationField::LookupTable(lookup_field_three_rules());
+        let s = substrate_obs(0.5, -0.3, 1.0);
+        let err = forward_sweep_invert_posterior(&s, &field, 1.0, None, 1.0, false, None, 5)
+            .unwrap_err();
+        assert_eq!(err, OperationError::PosteriorRequiresCanonicalGrid);
+    }
+
+    #[test]
+    fn forward_sweep_invert_posterior_learned_field_unsupported() {
+        // Build a minimal LearnedField (one identity layer, 3→2).
+        let layer = MlpLayer {
+            w: vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]],
+            b: vec![0.0, 0.0],
+        };
+        let lf = LearnedField {
+            direction: Direction::Forward,
+            rule_at_origin: rule("origin", 0.0, 0.0, None),
+            weights: vec![layer],
+            architecture: vec![3, 2],
+            activation: Activation::Tanh,
+            tau_obs_ref: 1.0,
+            description: None,
+        };
+        let field = TranslationField::Learned(lf);
+        let s = substrate_obs(0.5, -0.3, 1.0);
+        let err = forward_sweep_invert_posterior(&s, &field, 1.0, None, 1.0, false, None, 5)
+            .unwrap_err();
+        assert_eq!(err, OperationError::PosteriorUnsupportedFieldShape);
+    }
+
+    #[test]
+    fn forward_sweep_invert_posterior_wrapped_stamps_provenance() {
+        let field = TranslationField::TangentFlow(tangent_flow_field(0.0, 0.0));
+        let s = substrate_obs(0.5, -0.3, 1.0);
+        let out = forward_sweep_invert_posterior_wrapped(
+            &s, &field, 1.0, None, 1.0, false, None, 5,
+        )
+        .unwrap();
+        assert_eq!(out.provenance.operation, "forward_sweep_invert_posterior");
+        assert_eq!(out.provenance.dispatch_path, DispatchPath::DirectCompute);
+        // round_trip_residual is None on the posterior wrapped path.
+        assert!(out.validation.round_trip_residual.is_none());
+        // Solver version stamps onto the provenance.
+        assert_eq!(out.provenance.solver_version, crate::provenance::SOLVER_VERSION);
     }
 }

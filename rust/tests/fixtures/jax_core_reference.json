@@ -4038,5 +4038,367 @@
         "ambiguity_regions": []
       }
     }
+  ],
+  "tangent_flow_forward_jacobian": [
+    {
+      "label": "generic non-degenerate",
+      "inputs": {
+        "delta_gamma": 0.5,
+        "tau_obs": 4.0,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "jacobian": [
+          [
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            2.0
+          ]
+        ]
+      }
+    },
+    {
+      "label": "moderate delta_gamma",
+      "inputs": {
+        "delta_gamma": 0.7,
+        "tau_obs": 2.0,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "jacobian": [
+          [
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            1.624504792712471
+          ]
+        ]
+      }
+    },
+    {
+      "label": "negative delta_gamma",
+      "inputs": {
+        "delta_gamma": -0.3,
+        "tau_obs": 3.0,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "jacobian": [
+          [
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.7192230933248643
+          ]
+        ]
+      }
+    },
+    {
+      "label": "zero delta_gamma -> identity",
+      "inputs": {
+        "delta_gamma": 0.0,
+        "tau_obs": 17.0,
+        "tau_obs_ref": 3.0
+      },
+      "outputs": {
+        "jacobian": [
+          [
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            1.0
+          ]
+        ]
+      }
+    },
+    {
+      "label": "tau == ref -> ratio 1",
+      "inputs": {
+        "delta_gamma": 0.5,
+        "tau_obs": 4.0,
+        "tau_obs_ref": 4.0
+      },
+      "outputs": {
+        "jacobian": [
+          [
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            1.0
+          ]
+        ]
+      }
+    },
+    {
+      "label": "degenerate tau_obs -> identity",
+      "inputs": {
+        "delta_gamma": 0.5,
+        "tau_obs": 0.0,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "jacobian": [
+          [
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            1.0
+          ]
+        ]
+      }
+    },
+    {
+      "label": "degenerate tau_obs_ref -> identity",
+      "inputs": {
+        "delta_gamma": 0.5,
+        "tau_obs": 4.0,
+        "tau_obs_ref": 0.0
+      },
+      "outputs": {
+        "jacobian": [
+          [
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            1.0
+          ]
+        ]
+      }
+    },
+    {
+      "label": "large tau ratio",
+      "inputs": {
+        "delta_gamma": 0.5,
+        "tau_obs": 100.0,
+        "tau_obs_ref": 1.0
+      },
+      "outputs": {
+        "jacobian": [
+          [
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            10.0
+          ]
+        ]
+      }
+    }
+  ],
+  "operation_output_posterior": [
+    {
+      "label": "tangent_flow_identity",
+      "inputs": {
+        "s_chit": 0.5,
+        "s_gamma_AB": -0.3,
+        "tau_obs": 1.0,
+        "noise_variance": 1.0,
+        "top_k": 5,
+        "field_shape": "tangent_flow",
+        "has_canonical_grid": false
+      },
+      "output": {
+        "value": {
+          "mean": {
+            "chit": 0.5,
+            "gamma_AB": -0.3,
+            "k_frust": false
+          },
+          "covariance": [
+            [
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0
+            ]
+          ],
+          "noise_variance": 1.0,
+          "log_evidence": 0.0,
+          "modes": [],
+          "notes": [
+            "laplace_from_closed_form_jacobian"
+          ]
+        },
+        "validation": {
+          "asymptotic_closure_compliant": true,
+          "k_frust_invariant": true,
+          "round_trip_residual": null
+        },
+        "provenance": {
+          "solver_version": "5.0.0",
+          "operation": "forward_sweep_invert_posterior",
+          "dispatch_path": "direct_compute",
+          "table_version": null
+        }
+      }
+    },
+    {
+      "label": "tangent_flow_nonidentity",
+      "inputs": {
+        "s_chit": 0.5,
+        "s_gamma_AB": -0.3,
+        "tau_obs": 2.0,
+        "noise_variance": 0.25,
+        "top_k": 5,
+        "field_shape": "tangent_flow",
+        "has_canonical_grid": false
+      },
+      "output": {
+        "value": {
+          "mean": {
+            "chit": 0.2920558458320164,
+            "gamma_AB": -0.21213203435596423,
+            "k_frust": false
+          },
+          "covariance": [
+            [
+              0.25,
+              0.0
+            ],
+            [
+              0.0,
+              0.12499999999999997
+            ]
+          ],
+          "noise_variance": 0.25,
+          "log_evidence": -0.3465735902799729,
+          "modes": [],
+          "notes": [
+            "laplace_from_closed_form_jacobian"
+          ]
+        },
+        "validation": {
+          "asymptotic_closure_compliant": true,
+          "k_frust_invariant": true,
+          "round_trip_residual": null
+        },
+        "provenance": {
+          "solver_version": "5.0.0",
+          "operation": "forward_sweep_invert_posterior",
+          "dispatch_path": "direct_compute",
+          "table_version": null
+        }
+      }
+    },
+    {
+      "label": "lookup_table_top_k_5",
+      "inputs": {
+        "s_chit": 0.5,
+        "s_gamma_AB": -0.3,
+        "tau_obs": 1.0,
+        "noise_variance": 0.04,
+        "top_k": 5,
+        "field_shape": "lookup_table",
+        "has_canonical_grid": true
+      },
+      "output": {
+        "value": {
+          "mean": {
+            "chit": 0.30000000000000004,
+            "gamma_AB": 0.1,
+            "k_frust": false
+          },
+          "covariance": [
+            [
+              0.26,
+              -0.08
+            ],
+            [
+              -0.08,
+              0.08666666666666667
+            ]
+          ],
+          "noise_variance": 0.04,
+          "log_evidence": null,
+          "modes": [
+            {
+              "chit": 0.5,
+              "gamma_AB": -0.3,
+              "k_frust": false
+            }
+          ],
+          "notes": [
+            "lookup_table_weighted_moments_top_k=3"
+          ]
+        },
+        "validation": {
+          "asymptotic_closure_compliant": true,
+          "k_frust_invariant": true,
+          "round_trip_residual": null
+        },
+        "provenance": {
+          "solver_version": "5.0.0",
+          "operation": "forward_sweep_invert_posterior",
+          "dispatch_path": "direct_compute",
+          "table_version": null
+        }
+      }
+    },
+    {
+      "label": "lookup_table_k_eq_1",
+      "inputs": {
+        "s_chit": 0.5,
+        "s_gamma_AB": -0.3,
+        "tau_obs": 1.0,
+        "noise_variance": 0.04,
+        "top_k": 1,
+        "field_shape": "lookup_table",
+        "has_canonical_grid": true
+      },
+      "output": {
+        "value": {
+          "mean": {
+            "chit": 0.5,
+            "gamma_AB": -0.3,
+            "k_frust": false
+          },
+          "covariance": [
+            [
+              0.04,
+              0.0
+            ],
+            [
+              0.0,
+              0.04
+            ]
+          ],
+          "noise_variance": 0.04,
+          "log_evidence": null,
+          "modes": [],
+          "notes": [
+            "lookup_table_grid_top_k=1_delta_with_noise_floor"
+          ]
+        },
+        "validation": {
+          "asymptotic_closure_compliant": true,
+          "k_frust_invariant": true,
+          "round_trip_residual": null
+        },
+        "provenance": {
+          "solver_version": "5.0.0",
+          "operation": "forward_sweep_invert_posterior",
+          "dispatch_path": "direct_compute",
+          "table_version": null
+        }
+      }
+    }
   ]
 }

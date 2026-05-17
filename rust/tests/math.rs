@@ -8,7 +8,8 @@
 use mpa_scale_solver::math::{
     Activation, MlpLayer, banach_state, caputo_flow, inv_2x2,
     laplace_covariance_from_jacobian, learned_field_substrate, lookup_squared_distance,
-    tangent_flow_canonical_inverse, tangent_flow_inversion_residual, tangent_flow_substrate,
+    tangent_flow_canonical_inverse, tangent_flow_forward_jacobian,
+    tangent_flow_inversion_residual, tangent_flow_substrate,
 };
 
 const TOL: f64 = 1e-12;
@@ -220,6 +221,51 @@ fn laplace_covariance_isotropic_jacobian() {
     assert!(approx_eq(cov[1][1], 0.25, TOL));
     assert!(cov[0][1].abs() < TOL);
     assert!(cov[1][0].abs() < TOL);
+}
+
+// ---------------------------------------------------------------------------
+// tangent_flow_forward_jacobian
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tangent_flow_forward_jacobian_diagonal_with_pow_ratio() {
+    // Non-degenerate: J = [[1, 0], [0, (tau/ref)^delta_gamma]].
+    let j = tangent_flow_forward_jacobian(0.5, 4.0, 1.0);
+    let expected_22 = 4.0_f64.powf(0.5);
+    assert!(approx_eq(j[0][0], 1.0, TOL));
+    assert!(j[0][1].abs() < TOL);
+    assert!(j[1][0].abs() < TOL);
+    assert!(approx_eq(j[1][1], expected_22, TOL));
+}
+
+#[test]
+fn tangent_flow_forward_jacobian_identity_at_degenerate_tau() {
+    // tau_obs <= 0 → forward map is identity → Jacobian is identity.
+    let j_zero = tangent_flow_forward_jacobian(0.5, 0.0, 1.0);
+    let j_neg = tangent_flow_forward_jacobian(0.5, -1.0, 1.0);
+    let j_zero_ref = tangent_flow_forward_jacobian(0.5, 4.0, 0.0);
+    for j in [j_zero, j_neg, j_zero_ref] {
+        assert!(approx_eq(j[0][0], 1.0, TOL));
+        assert!(approx_eq(j[1][1], 1.0, TOL));
+        assert!(j[0][1].abs() < TOL);
+        assert!(j[1][0].abs() < TOL);
+    }
+}
+
+#[test]
+fn tangent_flow_forward_jacobian_identity_at_zero_delta_gamma() {
+    // delta_gamma == 0 → pow_ratio = 1 → J = identity for any tau ratio.
+    let j = tangent_flow_forward_jacobian(0.0, 17.0, 3.0);
+    assert!(approx_eq(j[0][0], 1.0, TOL));
+    assert!(approx_eq(j[1][1], 1.0, TOL));
+}
+
+#[test]
+fn tangent_flow_forward_jacobian_at_ref_tau_is_identity() {
+    // tau_obs == tau_obs_ref → ratio = 1 → pow_ratio = 1 → identity.
+    let j = tangent_flow_forward_jacobian(0.7, 4.0, 4.0);
+    assert!(approx_eq(j[0][0], 1.0, TOL));
+    assert!(approx_eq(j[1][1], 1.0, TOL));
 }
 
 // ---------------------------------------------------------------------------

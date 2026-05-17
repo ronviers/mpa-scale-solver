@@ -148,6 +148,41 @@ pub fn tangent_flow_canonical_inverse(
 }
 
 // ---------------------------------------------------------------------------
+// Jacobian of the tangent-flow forward map
+// (mirror of jax_ops.tangent_flow_forward_jacobian)
+// ---------------------------------------------------------------------------
+
+/// 2x2 Jacobian of `tangent_flow_substrate` w.r.t. `(chit, gamma_AB)` at
+/// the given canonical state.
+///
+/// The forward map is component-wise: `scaled_chit` depends only on
+/// `chit` (additively, via `delta_chit * log(ratio)`); `scaled_gamma`
+/// depends only on `gamma_AB` (multiplicatively, via `ratio^delta_gamma`).
+/// The Jacobian is therefore diagonal:
+///
+///     [[ 1, 0 ],
+///      [ 0, (tau_obs/tau_obs_ref)^delta_gamma ]]
+///
+/// At degenerate `tau_obs <= 0` or `tau_obs_ref <= 0` the forward map
+/// is identity, so the Jacobian is identity too.
+///
+/// Bit-identity contract: matches `jax_ops.tangent_flow_forward_jacobian`
+/// (the JAX `jacfwd` path) within `LIBM` ULPs — the only non-trivial entry
+/// is `ratio.powf(delta_gamma)`, same libm call as Python's `**`.
+pub fn tangent_flow_forward_jacobian(
+    delta_gamma: f64,
+    tau_obs: f64,
+    tau_obs_ref: f64,
+) -> Mat2 {
+    if tau_obs > 0.0 && tau_obs_ref > 0.0 {
+        let pow_ratio = (tau_obs / tau_obs_ref).powf(delta_gamma);
+        [[1.0, 0.0], [0.0, pow_ratio]]
+    } else {
+        [[1.0, 0.0], [0.0, 1.0]]
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Inversion residual  (mirror of jax_core.tangent_flow_inversion_residual)
 // ---------------------------------------------------------------------------
 

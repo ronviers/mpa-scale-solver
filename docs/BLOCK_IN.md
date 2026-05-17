@@ -54,7 +54,7 @@ always — refine in place).
 |---|---|---|
 | v1–v5 | Foundation, JAX, Bayesian, intents, Caputo, cross-substrate, active learning, MCP, LearnedField, streaming + DSL + notebook ergonomics, continuous self-test + sensitivity backprop + gradient inversion — all shipped 2026-05-16 (see README §Session Log) | — (shipped) |
 | ~~v2.2~~ | ~~N-mode generalization (cut c)~~ — cancelled 2026-05-16; tombstone retained below | — |
-| **v6** | One-shot native port (Rust + WASM). Zero new features. Per-seed reproducibility against the v5 Python. Sessions 1-7 landed 2026-05-16 (math, types, raw forward path, gradient dispatcher, intent algebra, validation+provenance+wrapped); sessions 8-9 remaining (posterior, bindings). | v5 |
+| **v6** | One-shot native port (Rust + WASM). Zero new features. Per-seed reproducibility against the v5 Python. Sessions 1-8 landed 2026-05-16/17 (math, types, raw forward path, gradient dispatcher, intent algebra, validation+provenance+wrapped, posterior); session 9 remaining (bindings). | v5 |
 
 Sequencing is the user's call per ROADMAP. v6 is the only remaining
 version; the API surface and capability set are frozen as of v5.
@@ -394,8 +394,11 @@ mpa-conform's `import mpa_scale_solver` keeps working unchanged.
   divergence — `f"{0.0}"` is `"0.0"` in Python,
   `format!("{}", 0.0)` is `"0"` in Rust). `round_trip_residual`
   comparison uses `LIBM_WIDE` ULP tolerance (preemptive — the slot
-  is `None` for regime_at but session 8's posterior parity will
-  populate it). New dep: `blake2 = "0.10"` (default-features off)
+  is `None` for regime_at; session 8's `operation_output_posterior`
+  parity also emits `None` here since the posterior wrapped variant
+  has no meaningful forward-then-back, so the LIBM_WIDE branch
+  remains unexercised by wrapped variants as of session 8). New
+  dep: `blake2 = "0.10"` (default-features off)
   for `provenance_hash`'s `blake2b-32` digest. The thin-discipline decision on
   `make_provenance` was explicit args (no kwargs / no builder) to
   match the existing `operations.rs` style — Rust callers pass
@@ -413,6 +416,57 @@ mpa-conform's `import mpa_scale_solver` keeps working unchanged.
   wrapped-variant wire format; the "asymmetric parity is documented
   design" framing covers both timestamps and the note-string
   float-format divergence.
+- *Session 8 (2026-05-17):* **Bayesian inversion (Laplace
+  approximation)** — `forward_sweep_invert_posterior` + `_wrapped`
+  plus the underlying `tangent_flow_posterior` and
+  `lookup_table_posterior`. One new math primitive
+  (`tangent_flow_forward_jacobian` in `math.rs`, ~10 LOC analytical
+  diagonal `[[1, 0], [0, (tau/ref)^delta_gamma]]` — Python uses
+  `jax.jacfwd`; identity at degenerate tau on both sides). Two new
+  errors in `operations.rs`: `PosteriorRequiresCanonicalGrid`
+  (Python's `ValueError` for LookupTable without grid) and
+  `PosteriorUnsupportedFieldShape` (Python's `TypeError` for
+  LearnedField — no Laplace surface in v5). Tangent-flow path is the
+  closed-form fast path: MAP via session-1's
+  `tangent_flow_canonical_inverse`, covariance via session-7's
+  `laplace_covariance_from_jacobian`, log-evidence computed inline at
+  zero residual (Python's `slogdet(J^T J / σ²)`). Lookup-table path
+  is the discrete top-k weighted-moment estimate; `k.clamp(1, n)`
+  matches Python's `max(1, min(top_k, n))`; the `k == 1` degenerate
+  case returns a noise-floor delta posterior verbatim per BLOCK_IN
+  prep. **Three load-bearing port decisions** from BLOCK_IN
+  session-8 prep all held: (a) stable sort `(residual, index)` for
+  deterministic top-k tiebreak (Rust's `sort_by` is unstable);
+  (b) `modes` populated via `f64::to_bits()` equality matching
+  Python's tuple-on-floats equality (bit-equality emit-condition
+  discipline); (c) `k == 1` literal port without divergence from
+  Python's noise-floor-on-diagonal convention. **Two new
+  bit-identity fixtures**: (1) `tangent_flow_forward_jacobian`
+  (8 cases, category 1 per-primitive — LIBM 4 ULPs tolerance, the
+  matrix is `[[1, 0], [0, pow_ratio]]` so only the (1,1) cell exercises
+  libm `pow`); (2) `operation_output_posterior` (4 cases, category 2
+  schema parity — `tangent_flow_identity`, `tangent_flow_nonidentity`,
+  `lookup_table_top_k_5`, `lookup_table_k_eq_1`). The posterior
+  schema parity test extends session-7's `operation_output_regime_at`
+  template with the `Posterior` value shape (mean / covariance /
+  noise_variance / log_evidence / modes / notes) — same asymmetric-
+  parity discipline (timestamps + provenance notes excluded; computed
+  floats use LIBM_WIDE; `noise_variance` is input-echo bit-exact;
+  `notes` is bit-exact since the only format token is the `top_k`
+  integer). The session-7 fixture-discipline rule held: no rational
+  hash this time, but `noise_variance` round-trips through serde_json
+  as an exact decimal literal. The session-2 fixture lesson held
+  defensively: the substrate target is a literal pair, not generated
+  from one impl. **184/184 Rust tests pass** (118 src unit — was 108,
+  +10 posterior tests; +27 bit-identity — was 24, +1
+  tangent_flow_forward_jacobian + 1 operation_output_posterior + a
+  pre-counted +1; +21 math — was 17, +4 jacobian analytic; +18
+  types_smoke); Python 392/392 still green; `cargo build --release
+  --target wasm32-unknown-unknown` still clean. No new deps.
+  Session-9 prerequisite confirmed at exit: `tangent_flow_posterior`
+  works against the existing math primitives + the one new Jacobian
+  primitive; pyo3 binding for `Posterior` will need the same dict-
+  shape decision as the other `OperationOutput<T>` variants.
 
 **Goal.** One-shot consolidation. Match the proven v5 Python under the
 per-seed reproducibility discipline. Free to parallelize aggressively
@@ -455,7 +509,16 @@ consumes).
   Open/watch L-BFGS entry below for the cross-language convergence
   defer.
 - Streaming + symbolic query + cross-substrate ops + active learning +
-  Bayesian + Caputo.
+  Caputo.
+- ~~**Bayesian inversion (Laplace approximation)**~~ — landed session 8
+  at `rust/src/operations.rs` (`forward_sweep_invert_posterior` +
+  `_wrapped` + `tangent_flow_posterior` + `lookup_table_posterior`)
+  on top of session-1's `laplace_covariance_from_jacobian` /
+  `slogdet_2x2` and the new session-8 `math::tangent_flow_forward_jacobian`
+  (analytical 2x2). Tangent-flow path closed-form (MAP exact, log-
+  evidence finite); lookup-table path top-k weighted-moment with
+  noise-floor `k == 1` degenerate; LearnedField unsupported (no
+  Laplace surface in v5).
 - ~~Full intents (I1–I5) + composition.~~ Landed session 6 at
   `rust/src/operations.rs` (`intent_map`, `intent_compose`, five
   `intent_iN` handlers) and `rust/src/types.rs` (`IntentId`,
@@ -650,81 +713,58 @@ capability lands in v5 first via a v5.x release.
     dep: `blake2 = "0.10"` (default-features off).
     `SOLVER_VERSION = "5.0.0"` const tracks Python's `__version__`
     (deliberate decoupling from the Cargo crate version).
-  - *Session 8 — posterior.* `forward_sweep_invert_posterior` +
-    `_wrapped`. Depends on the Laplace primitives already in
-    `math.rs`; the wrapper builds a `Posterior` from a posterior
-    covariance + MAP point. The session-7-proven wrapped-variant
-    pattern (raw + `*_wrapped` stamping `OperationOutput<T>` +
-    `make_provenance` + reusing `report_for_forward_sweep_invert`
-    for the MAP point) is the template; Python reuses that report
-    builder verbatim (operations.py line 1662), so no new
-    `report_for_posterior` is needed at the v5 surface.
-    **Session-7 audit found one missing primitive:**
-    `jax_ops.tangent_flow_forward_jacobian` does not have a Rust
-    counterpart — Python uses `jax.jacfwd` over
-    `tangent_flow_substrate`; Rust must port the analytical 2x2
-    form. The Jacobian is diagonal:
-    `[[1, 0], [0, (tau_obs/tau_obs_ref)^delta_gamma]]` for the
-    non-degenerate path and `[[1, 0], [0, 1]]` (identity) at the
-    degenerate `tau_obs <= 0` branch — ~10 LOC in `math.rs`. All
-    other primitives needed by `tangent_flow_posterior`
-    (`tangent_flow_canonical_inverse`, `laplace_covariance_from_jacobian`,
-    `slogdet_2x2`) and `lookup_table_posterior`
-    (`forward_sweep_invert` with `return_residuals=true`, libm
-    `exp`, sort) are already in place. **Fixture-discipline rule
-    applies to the new `operation_output_posterior` parity test:**
-    `Posterior.mean` (`CanonicalState`), `covariance` (`[[f64; 2]; 2]`),
-    `noise_variance`, `log_evidence` — all *computed* floats →
-    `LIBM_WIDE` ULP tolerance, never bit-exact JSON storage.
-    **Three small dispatch questions to settle at session-8-time:**
-    (a) `lookup_table_posterior`'s `k == 1` degenerate path returns
-    a delta posterior with noise-floor covariance — port literally
-    per `jax_ops.lookup_table_posterior` lines 378–392.
-    (b) Python's `np.argsort(residual_field)[:k]` for the top-k
-    selection is stable (ties broken by index); Rust's
-    `slice::sort_by` is unstable. Use a stable sort
-    (`Vec::sort_by_key` with `(residual, index)` tiebreak, or
-    `sort_by` with an explicit index secondary key) so the top-k
-    set is deterministic on ties — otherwise the softmax-weighted
-    moments can drift across Rust runs even for the same input.
-    (c) `Posterior.modes` is populated only when MAP ≠
-    posterior_mean (lookup-table path); Python uses tuple
-    equality (`(map.chit, map.gamma_AB) != (mean_chit, mean_gamma)`)
-    which is bit-equality on f64. Rust mirror: `if
-    map.chit.to_bits() != mean.chit.to_bits() || ...` to keep the
-    same emit-condition discipline. **`operation_output_posterior`
-    parity test** (category 2, schema parity per
-    `bit_identity.rs` module docstring) extends the wrapped-variant
-    wire coverage: `Posterior.mean` (CanonicalState — bit-exact
-    fields), `covariance` (`[[f64; 2]; 2]` — LIBM_WIDE ULP
-    tolerance per fixture-discipline rule),
-    `noise_variance` / `log_evidence` (computed floats —
-    LIBM_WIDE), `modes` / `notes` (structured, bit-exact).
+  - ~~*Session 8 — posterior.*~~ Landed 2026-05-17 as v6.5.0 —
+    see the §v6 session log bullet. New math primitive
+    `tangent_flow_forward_jacobian` (`math.rs`, 4 analytic + 1
+    bit-identity test); raw `tangent_flow_posterior` +
+    `lookup_table_posterior` + dispatcher
+    `forward_sweep_invert_posterior` + `_wrapped` (`operations.rs`,
+    10 unit tests); two new errors
+    (`PosteriorRequiresCanonicalGrid`, `PosteriorUnsupportedFieldShape`).
+    Two parity-fixture additions
+    (`tangent_flow_forward_jacobian` category-1 per-primitive;
+    `operation_output_posterior` category-2 schema parity covering
+    tangent_flow_identity / tangent_flow_nonidentity /
+    lookup_table_top_k_5 / lookup_table_k_eq_1). All three
+    BLOCK_IN-prep dispatch decisions held verbatim: stable
+    `(residual, index)` sort, `to_bits()` modes emit-condition,
+    `k == 1` noise-floor delta literal port. The session-7-proven
+    `report_for_forward_sweep_invert` reuse pattern held; no new
+    `report_for_posterior` was needed.
   - *Session 9 — bindings.* `pyo3` + `wasm-bindgen`. This is the
     one that makes v6 actually shippable — mpa-conform's
     `import mpa_scale_solver` keeps working unchanged; mpa-auditor
     gains a browser-side native solver. Per-op `__call__` shims and
-    typed PyO3 conversions for the eight wrapped variants land here
-    (validation + provenance ride along automatically — they're
-    already `Serialize + Deserialize`). **Session-7 prerequisites
-    audit:** pyo3 build prerequisites verified on this Windows
-    machine — `C:\Program Files\Python312\libs\python312.lib` +
+    typed PyO3 conversions for the **nine** wrapped variants land
+    here (the eight from session 7 plus session 8's
+    `forward_sweep_invert_posterior_wrapped`). Validation +
+    provenance ride along automatically — they're already
+    `Serialize + Deserialize`. **Session-7 prerequisites audit:**
+    pyo3 build prerequisites verified on this Windows machine —
+    `C:\Program Files\Python312\libs\python312.lib` +
     `python312.dll` + `Include\Python.h` all present, so the
     `PYO3_PYTHON` auto-detection path will work without GUI
     installer intervention. `wasm32-unknown-unknown` target was
     bootstrapped at session 1; only `wasm-pack` / `wasm-bindgen-cli`
     (`cargo install wasm-pack`) needs to land at session-9 time.
-    **One open design question to settle at session-9 time:**
+    **Open design question to settle at session-9 time:**
     `OperationOutput<T>` is generic — pyo3 cannot expose
     parameterized Rust types directly. Choose between per-`T`
     concrete wrappers (`PyOperationOutputSubstrateState`,
-    `PyOperationOutputCanonicalState`, ...) or a dict-shaped Python
-    view (`{value: ..., validation: {...}, provenance: {...}}` via
+    `PyOperationOutputCanonicalState`,
+    **`PyOperationOutputPosterior`** (new at session 8), ...) or a
+    dict-shaped Python view
+    (`{value: ..., validation: {...}, provenance: {...}}` via
     serde_json). The dict-shape is thinner and matches Python's
     existing `dataclasses.asdict` consumer surface — leaning
-    toward it. **InverseLookupSidecar wire format is now locked**
-    (session-7 followup): `docs/SIDECAR_FORMAT.md` v1.0 is the
-    authoritative spec, Python and Rust both implement it, and
+    toward it. The session-8-validated `Posterior` schema parity
+    (computed-float `LIBM_WIDE` tolerance on mean / covariance /
+    log_evidence, `to_bits` modes emit-condition, bit-exact
+    `noise_variance` echo, bit-exact `notes`) maps cleanly into the
+    dict shape with the same per-field disciplines. **InverseLookupSidecar
+    wire format is now locked** (session-7 followup):
+    `docs/SIDECAR_FORMAT.md` v1.0 is the authoritative spec, Python
+    and Rust both implement it, and
     `bit_identity.rs::sidecar_python_to_rust_parity` exercises the
     end-to-end round-trip. mpa-conform's curator session writes
     producers to the frozen spec.

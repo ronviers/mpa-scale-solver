@@ -5,7 +5,10 @@
 //! `tests/bit_identity.rs` compare the two over a seed grid.
 //!
 //! Module mapping (Python → Rust):
-//!   jax_core.py        → math.rs        (session 1: 12 primitives)
+//!   jax_core.py        → math.rs        (session 1: 12 primitives;
+//!                                        session 8: +1 primitive
+//!                                        `tangent_flow_forward_jacobian`
+//!                                        from `jax_ops.py`)
 //!   types.py           → types.rs       (session 3: dataclass shapes)
 //!   gfdr_model.py      → gfdr_model.rs  (session 4)
 //!   sidecar.py         → sidecar.rs     (session 4)
@@ -16,7 +19,8 @@
 //!                                        algebra; session 7: raw
 //!                                        validate_driver_profile + the
 //!                                        8 *_wrapped variants;
-//!                                        posterior lands session 8)
+//!                                        session 8: posterior surface
+//!                                        — raw + wrapped + dispatcher)
 //!   sensitivity.py     → sensitivity.rs (future session)
 //!   self_test.py       → self_test.rs   (future session)
 //!   streaming.py       → streaming.rs   (future session)

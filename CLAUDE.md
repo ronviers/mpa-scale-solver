@@ -439,6 +439,67 @@ types_smoke); Python 392/392 still green; WASM build still
 clean. Single new dep: `blake2 = "0.10"` (default-features off)
 for the blake2b-32 digest.
 
+operations.rs posterior surface + tangent_flow_forward_jacobian
+(session 8): Bayesian inversion via Laplace approximation lands.
+One new math primitive — `math::tangent_flow_forward_jacobian`
+(~10 LOC analytical 2x2 diagonal
+`[[1, 0], [0, (tau/ref)^delta_gamma]]` non-degenerate, identity at
+degenerate tau). Python source uses `jax.jacfwd`; the Rust port
+encodes the closed form directly. Single libm `pow` per
+non-trivial entry → LIBM (4 ULP) tolerance in the bit-identity
+fixture; identity entries are exact 1.0. **operations.rs** gains
+the raw `tangent_flow_posterior` (closed-form fast path: MAP via
+session-1's `tangent_flow_canonical_inverse`, covariance via
+session-7's `laplace_covariance_from_jacobian`, log-evidence
+inline at zero residual using `slogdet_2x2` on `J^T J / σ²`),
+raw `lookup_table_posterior` (discrete top-k weighted-moment
+estimate: stable `(residual, index)` sort, `k.clamp(1, n)`
+matching Python's `max(1, min(top_k, n))`, `k == 1` degenerate
+returns a noise-floor delta posterior; `modes` populated via
+`f64::to_bits` equality matching Python's tuple-on-floats
+equality — bit-equality emit-condition discipline), the
+`forward_sweep_invert_posterior` dispatcher (TangentFlow →
+closed-form; LookupTable → discrete with required
+`canonical_grid`; LearnedField → unsupported, no Laplace
+surface in v5), and `forward_sweep_invert_posterior_wrapped`
+reusing session-7's `report_for_forward_sweep_invert` on the
+MAP point (no `report_for_posterior` needed at the v5 surface —
+Python reuses it verbatim at operations.py line 1662). Two new
+errors: `OperationError::PosteriorRequiresCanonicalGrid`
+(Python's ValueError for LookupTable without grid) and
+`PosteriorUnsupportedFieldShape` (Python's TypeError for
+LearnedField). **Two new bit-identity fixtures**:
+(1) `tangent_flow_forward_jacobian` (8 cases, category 1
+per-primitive bit-identity); (2) `operation_output_posterior`
+(4 cases, category 2 schema parity — `tangent_flow_identity`,
+`tangent_flow_nonidentity`, `lookup_table_top_k_5`,
+`lookup_table_k_eq_1`). The posterior schema-parity test
+extends session-7's `operation_output_regime_at` template with
+the `Posterior` value shape: mean.chit / gamma_AB via
+LIBM_WIDE; mean.k_frust bit-exact; covariance LIBM_WIDE per
+cell; `noise_variance` bit-exact input echo; `log_evidence`
+LIBM_WIDE when Some, bit-equal null otherwise; `modes` count +
+per-element LIBM_WIDE/bit-exact; `notes` bit-exact (the only
+format token is the `top_k` integer — no float-format
+divergence); provenance + validation flags identical to
+regime_at's contract. The session-7 fixture-discipline rule
+held: no rational hash this time, but `noise_variance`
+round-trips through serde_json as an exact decimal literal
+(input echo, not a computed quantity). All three BLOCK_IN
+session-8-prep dispatch decisions held verbatim: stable
+`(residual, index)` sort, `to_bits()` modes emit-condition,
+`k == 1` noise-floor delta literal port. **184/184 Rust tests
+pass** (118 src unit — was 108, +10 posterior tests; +27
+bit-identity — was 24, +1 tangent_flow_forward_jacobian + 1
+operation_output_posterior + a pre-counted +1; +21 math —
+was 17, +4 jacobian analytic; +18 types_smoke); Python 392/392
+still green; `cargo build --release --target
+wasm32-unknown-unknown` still clean. No new deps. Next per
+BLOCK_IN: session 9 — bindings (pyo3 + wasm-bindgen). The
+session-8 audit added `Posterior` as a fresh entry in the
+session-9 `OperationOutput<T>` dict-shape decision; same
+per-field disciplines apply.
+
 
 ## What does NOT live here
 
@@ -814,6 +875,30 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
     new analytical primitive `tangent_flow_forward_jacobian` needs
     to land in `math.rs` per the session-7 audit). Details in
     [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
+  - *Session 8 (2026-05-17):* **Bayesian inversion (Laplace
+    approximation)** — `forward_sweep_invert_posterior` +
+    `_wrapped` plus the underlying `tangent_flow_posterior` and
+    `lookup_table_posterior`. One new math primitive
+    `math::tangent_flow_forward_jacobian` (~10 LOC analytical
+    diagonal 2x2; Python uses `jax.jacfwd`); two new errors
+    (`PosteriorRequiresCanonicalGrid`, `PosteriorUnsupportedFieldShape`).
+    All three BLOCK_IN session-8-prep dispatch decisions held
+    verbatim: stable `(residual, index)` sort, `to_bits()` modes
+    emit-condition, `k == 1` noise-floor delta literal port. The
+    session-7-proven `report_for_forward_sweep_invert` reuse
+    pattern held (no `report_for_posterior` needed at the v5
+    surface). Two parity-fixture additions
+    (`tangent_flow_forward_jacobian` category-1 per-primitive;
+    `operation_output_posterior` category-2 schema parity covering
+    the closed-form + discrete + k==1 degenerate paths).
+    **184/184 Rust tests pass** (118 src unit — was 108, +10
+    posterior tests; +27 bit-identity — was 24, +1
+    tangent_flow_forward_jacobian + 1 operation_output_posterior;
+    +21 math — was 17, +4 jacobian analytic; +18 types_smoke);
+    Python 392/392 still green; `cargo build --release --target
+    wasm32-unknown-unknown` still clean. No new deps. Next per
+    BLOCK_IN: session 9 — bindings (pyo3 + wasm-bindgen). Details
+    in [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
 
 Each is its own session, sequenced by the user via
 `mpa-conform/docs/ROADMAP.md`.

@@ -30,7 +30,9 @@ import jax.numpy as jnp
 
 from mpa_scale_solver import jax_core, gfdr_model
 from mpa_scale_solver.flow import flow as flow_op
+from mpa_scale_solver.jax_ops import tangent_flow_forward_jacobian as jacobian_op
 from mpa_scale_solver.operations import (
+    forward_sweep_invert_posterior_wrapped as posterior_wrapped_op,
     intent_map as intent_map_op,
     regime_at_wrapped as regime_at_wrapped_op,
 )
@@ -49,7 +51,9 @@ from mpa_scale_solver.types import (
     GamutSpec,
     OperatingPoint,
     ScalingRule,
+    SubstrateState,
     TangentFlowField,
+    TranslationField,
     TranslationRule,
 )
 
@@ -897,6 +901,232 @@ def cases_sidecar_wire_format() -> list[dict]:
     }]
 
 
+# ---------------------------------------------------------------------------
+# Session 8 — posterior surface (jax_ops + operations)
+# ---------------------------------------------------------------------------
+#
+# `tangent_flow_forward_jacobian` is a math-primitive bit-identity entry
+# (category 1) — the Python source uses `jax.jacfwd`; the Rust port uses
+# the analytical 2x2 form. The cross-language contract is per-cell ULP
+# tolerance on the 4 matrix entries.
+#
+# `operation_output_posterior` is a schema-parity entry (category 2),
+# mirroring session 7's `operation_output_regime_at` template. Covers
+# the two posterior branches: tangent-flow (closed-form, with finite
+# log_evidence) and lookup-table (top_k weighted moments, log_evidence
+# None, plus a k==1 degenerate sub-case). Computed-float fields
+# (mean.chit / gamma_AB, covariance entries, log_evidence) compare via
+# LIBM_WIDE ULP tolerance per the fixture-discipline rule.
+
+
+def cases_tangent_flow_forward_jacobian() -> list[dict]:
+    """2x2 analytical Jacobian of `tangent_flow_substrate` w.r.t. canonical.
+
+    The Python reference uses `jax.jacfwd`; the Rust port encodes the
+    diagonal `[[1, 0], [0, ratio^delta_gamma]]` form directly. Bit-identity
+    holds within LIBM ULPs (single `pow` call per non-trivial entry,
+    same libm dispatch on both sides).
+
+    `(chit, gamma_AB)` are inputs to the Python jacobian call but the
+    Rust port doesn't take them — the Jacobian is constant in canonical
+    coordinates because the forward map is linear in each component.
+    The fixture keeps `chit` / `gamma_AB` in the inputs so a future
+    consumer can re-verify they don't influence the output.
+    """
+    # Trivial origin canonical for the Python call — chit/gamma_AB are
+    # irrelevant to the Jacobian by construction (the forward map is
+    # linear in each canonical component).
+    canonical = CanonicalState(chit=0.0, gamma_AB=0.0, k_frust=False)
+    sweep = [
+        # (delta_gamma, tau_obs, tau_obs_ref, label)
+        (0.5, 4.0, 1.0, "generic non-degenerate"),
+        (0.7, 2.0, 1.0, "moderate delta_gamma"),
+        (-0.3, 3.0, 1.0, "negative delta_gamma"),
+        (0.0, 17.0, 3.0, "zero delta_gamma -> identity"),
+        (0.5, 4.0, 4.0, "tau == ref -> ratio 1"),
+        (0.5, 0.0, 1.0, "degenerate tau_obs -> identity"),
+        (0.5, 4.0, 0.0, "degenerate tau_obs_ref -> identity"),
+        (0.5, 100.0, 1.0, "large tau ratio"),
+    ]
+    out: list[dict] = []
+    for delta_gamma, tau, ref, label in sweep:
+        field = TangentFlowField(
+            direction="forward",
+            shape="tangent_flow",
+            rule_at_origin=TranslationRule(
+                operating_point=OperatingPoint(label="origin", gt="s"),
+                xdot_choice="default",
+                canonical=CanonicalPoint(
+                    chit=0.0, gamma_AB=0.0, k_frust=False, method="test",
+                ),
+            ),
+            scaling=ScalingRule(
+                tau_obs_ref=float(ref), delta_chit=0.0, delta_gamma=float(delta_gamma),
+            ),
+        )
+        jac = jacobian_op(canonical, field, float(tau))
+        out.append({
+            "label": label,
+            "inputs": {
+                "delta_gamma": float(delta_gamma),
+                "tau_obs": float(tau),
+                "tau_obs_ref": float(ref),
+            },
+            "outputs": {"jacobian": _mat(jac)},
+        })
+    return out
+
+
+def _posterior_substrate(s_chit: float, s_gamma: float, tau_obs: float) -> SubstrateState:
+    return SubstrateState(
+        tau_obs=tau_obs,
+        observables={"substrate_chit": s_chit, "substrate_gamma_AB": s_gamma},
+    )
+
+
+def _serialize_posterior_output(op_out) -> dict:
+    pst = op_out.value
+    return {
+        "value": {
+            "mean": {
+                "chit": pst.mean.chit,
+                "gamma_AB": pst.mean.gamma_AB,
+                "k_frust": pst.mean.k_frust,
+            },
+            "covariance": [list(row) for row in pst.covariance],
+            "noise_variance": pst.noise_variance,
+            "log_evidence": pst.log_evidence,  # may be None
+            "modes": [
+                {"chit": m.chit, "gamma_AB": m.gamma_AB, "k_frust": m.k_frust}
+                for m in pst.modes
+            ],
+            "notes": list(pst.notes),
+        },
+        "validation": {
+            "asymptotic_closure_compliant":
+                op_out.validation.asymptotic_closure_compliant,
+            "k_frust_invariant": op_out.validation.k_frust_invariant,
+            "round_trip_residual": op_out.validation.round_trip_residual,
+        },
+        "provenance": {
+            "solver_version": op_out.provenance.solver_version,
+            "operation": op_out.provenance.operation,
+            "dispatch_path": op_out.provenance.dispatch_path.value,
+            "table_version": op_out.provenance.table_version,
+        },
+    }
+
+
+def cases_operation_output_posterior() -> list[dict]:
+    """End-to-end wrapped-variant JSON parity for
+    `forward_sweep_invert_posterior_wrapped` — Session 8.
+
+    Mirrors session 7's `operation_output_regime_at` template (category
+    2: schema parity). Three cases covering the two posterior branches:
+
+      * `tangent_flow_identity` — closed-form fast path, identity field
+        (delta_chit=delta_gamma=0). Jacobian is I → covariance is
+        diagonal with σ² entries; log_evidence finite.
+      * `tangent_flow_nonidentity` — closed-form, non-trivial scaling
+        (delta_gamma=0.5). Covariance gets the `1/pow_ratio^2` factor.
+      * `lookup_table_top_k_5` — discrete grid path with top_k=5;
+        log_evidence is None; weighted-moment mean falls inside the
+        grid envelope.
+      * `lookup_table_k_eq_1` — degenerate single-candidate path
+        returning a delta posterior with the noise-floor covariance.
+
+    Timestamps + note strings are excluded from the rust-side parity
+    check per the documented session-7 asymmetry; computed floats
+    compare via LIBM_WIDE ULP tolerance.
+    """
+    out: list[dict] = []
+
+    # Identity tangent-flow field at tau_obs=1.
+    field_identity = TangentFlowField(
+        direction="forward",
+        shape="tangent_flow",
+        rule_at_origin=TranslationRule(
+            operating_point=OperatingPoint(label="origin", gt="s"),
+            xdot_choice="default",
+            canonical=CanonicalPoint(
+                chit=0.0, gamma_AB=0.0, k_frust=False, method="test",
+            ),
+        ),
+        scaling=ScalingRule(tau_obs_ref=1.0, delta_chit=0.0, delta_gamma=0.0),
+    )
+
+    # Non-identity tangent-flow field.
+    field_nontrivial = TangentFlowField(
+        direction="forward",
+        shape="tangent_flow",
+        rule_at_origin=TranslationRule(
+            operating_point=OperatingPoint(label="origin", gt="s"),
+            xdot_choice="default",
+            canonical=CanonicalPoint(
+                chit=0.0, gamma_AB=0.0, k_frust=False, method="test",
+            ),
+        ),
+        scaling=ScalingRule(tau_obs_ref=1.0, delta_chit=0.3, delta_gamma=0.5),
+    )
+
+    # Three-rule lookup-table field.
+    def _rule(label, chit, gamma_AB):
+        return TranslationRule(
+            operating_point=OperatingPoint(
+                label=label, gt="s", axes={"tau_obs": 1.0},
+            ),
+            xdot_choice="default",
+            canonical=CanonicalPoint(
+                chit=chit, gamma_AB=gamma_AB, k_frust=False, method="test",
+            ),
+        )
+
+    from mpa_scale_solver.types import TranslationField as _LookupTableField
+    field_lookup = _LookupTableField(
+        direction="forward",
+        shape="lookup_table",
+        rule=[
+            _rule("a", 0.5, -0.3),
+            _rule("b", 0.8, 0.2),
+            _rule("c", -0.4, 0.4),
+        ],
+    )
+    grid = np.array([[0.5, -0.3], [0.8, 0.2], [-0.4, 0.4]], dtype=np.float64)
+
+    cases = [
+        ("tangent_flow_identity", field_identity, None, 1.0, 1.0, 5),
+        ("tangent_flow_nonidentity", field_nontrivial, None, 2.0, 0.25, 5),
+        ("lookup_table_top_k_5", field_lookup, grid, 1.0, 0.04, 5),
+        ("lookup_table_k_eq_1", field_lookup, grid, 1.0, 0.04, 1),
+    ]
+    for label, field, c_grid, tau_obs, nv, top_k in cases:
+        # Substrate at the identity-field "origin" looks like (0.5, -0.3) — pick
+        # a point that hits one of the lookup-table grid rules so the discrete
+        # path has a clear MAP.
+        sub = _posterior_substrate(s_chit=0.5, s_gamma=-0.3, tau_obs=tau_obs)
+        op_out = posterior_wrapped_op(
+            sub, field, tau_obs,
+            canonical_grid=c_grid,
+            noise_variance=nv,
+            k_frust=False,
+            top_k=top_k,
+        )
+        out.append({
+            "label": label,
+            "inputs": {
+                "s_chit": 0.5,
+                "s_gamma_AB": -0.3,
+                "tau_obs": tau_obs,
+                "noise_variance": nv,
+                "top_k": top_k,
+                "field_shape": field.shape,
+                "has_canonical_grid": c_grid is not None,
+            },
+            "output": _serialize_posterior_output(op_out),
+        })
+    return out
+
+
 def cases_operation_output_regime_at() -> list[dict]:
     """End-to-end wrapped-variant JSON parity for `regime_at_wrapped`.
 
@@ -981,6 +1211,9 @@ PRIMITIVES = {
     "operation_output_regime_at": cases_operation_output_regime_at,
     # session 7 followup — sidecar wire-format lock-in (SIDECAR_FORMAT.md v1.0)
     "sidecar_wire_format": cases_sidecar_wire_format,
+    # session 8 — posterior surface (jax_ops + operations)
+    "tangent_flow_forward_jacobian": cases_tangent_flow_forward_jacobian,
+    "operation_output_posterior": cases_operation_output_posterior,
 }
 
 

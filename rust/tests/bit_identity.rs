@@ -116,15 +116,19 @@ use mpa_scale_solver::math::{
     Activation, MlpLayer, banach_state, caputo_flow, laplace_covariance_from_hessian,
     laplace_covariance_from_jacobian, laplace_log_evidence, learned_field_substrate,
     lookup_squared_distance, mlp_forward, tangent_flow_canonical,
-    tangent_flow_canonical_inverse, tangent_flow_inversion_residual, tangent_flow_substrate,
+    tangent_flow_canonical_inverse, tangent_flow_forward_jacobian,
+    tangent_flow_inversion_residual, tangent_flow_substrate,
 };
-use mpa_scale_solver::operations::regime_at_wrapped;
+use mpa_scale_solver::operations::{
+    forward_sweep_invert_posterior_wrapped, regime_at_wrapped,
+};
 use mpa_scale_solver::provenance::{make_provenance, provenance_digest_bytes, SOLVER_VERSION};
 use mpa_scale_solver::sidecar::{lookup_forward, lookup_inverse, round_key, DEFAULT_ROUNDING_DECIMALS};
 use mpa_scale_solver::types::{
     CanonicalPoint, CanonicalState, CapacityClass, Direction, DispatchPath, Gt, IntentDiagnostics,
-    IntentId, InverseLookupSidecar, OperatingPoint, RegimeLabel, SacrificeRecord, ScalingRule,
-    TangentFlowField, TranslationField, TranslationRule,
+    IntentId, InverseLookupSidecar, LookupTableField, OperatingPoint, RegimeLabel,
+    SacrificeRecord, ScalingRule, SubstrateState, TangentFlowField, TranslationField,
+    TranslationRule,
 };
 use serde_json::Value;
 
@@ -258,6 +262,18 @@ fn fixture_covers_all_expected_primitives() {
         // session 7 followup — sidecar wire-format lock-in. Full JSON
         // round-trip parity per docs/SIDECAR_FORMAT.md v1.0.
         "sidecar_wire_format",
+        // session 8 — posterior surface.
+        // `tangent_flow_forward_jacobian` is per-primitive bit-identity
+        // (category 1); the Rust port encodes the diagonal Jacobian
+        // analytically while Python uses jax.jacfwd. Same single libm
+        // pow call → LIBM tolerance.
+        // `operation_output_posterior` is schema parity (category 2) for
+        // the wrapped posterior variant — same template as session 7's
+        // `operation_output_regime_at`, extended with the Posterior
+        // value-struct contents (mean / covariance / log_evidence /
+        // modes / notes).
+        "tangent_flow_forward_jacobian",
+        "operation_output_posterior",
     ];
     assert_eq!(
         obj.len(),
@@ -651,6 +667,43 @@ fn jax_core_laplace_log_evidence() {
             LIBM_WIDE,
             &format!("laplace_log_evidence[{i}]"),
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Session 8 — tangent_flow_forward_jacobian (math.rs primitive)
+// ---------------------------------------------------------------------------
+
+/// Per-cell bit-identity for the 2x2 analytical Jacobian. Python emits
+/// the matrix via `jax.jacfwd`; Rust encodes the diagonal form directly.
+/// Single `pow` call per non-trivial entry → LIBM (4 ULP) tolerance.
+#[test]
+fn jax_core_tangent_flow_forward_jacobian() {
+    let fixture = load_fixture();
+    for case in fixture["tangent_flow_forward_jacobian"]
+        .as_array()
+        .expect("tangent_flow_forward_jacobian array")
+    {
+        let label = case["label"].as_str().unwrap_or("?");
+        let inp = &case["inputs"];
+        let jac = tangent_flow_forward_jacobian(
+            f(&inp["delta_gamma"]),
+            f(&inp["tau_obs"]),
+            f(&inp["tau_obs_ref"]),
+        );
+        let exp = mat_f(&case["outputs"]["jacobian"]);
+        assert_eq!(exp.len(), 2, "jacobian fixture row count");
+        for i in 0..2 {
+            assert_eq!(exp[i].len(), 2, "jacobian fixture col count [{i}]");
+            for j in 0..2 {
+                assert_close(
+                    jac[i][j],
+                    exp[i][j],
+                    LIBM,
+                    &format!("tangent_flow_forward_jacobian[{label}][{i}][{j}]"),
+                );
+            }
+        }
     }
 }
 
@@ -1435,6 +1488,309 @@ fn operation_output_regime_at_python_to_rust_parity() {
             py_tv,
             "{label}: table_version",
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Session 8 — operation_output_posterior wrapped-variant wire parity
+// ---------------------------------------------------------------------------
+
+/// Cross-language schema parity for
+/// `forward_sweep_invert_posterior_wrapped` — Session 8 extension of
+/// session 7's `operation_output_regime_at` template.
+///
+/// Each fixture case reconstructs the field shape from the `label`
+/// (four cases: tangent_flow_identity, tangent_flow_nonidentity,
+/// lookup_table_top_k_5, lookup_table_k_eq_1), calls the Rust wrapped
+/// op with the same inputs, and asserts:
+///
+///   * Posterior.mean.{chit, gamma_AB} via LIBM_WIDE ULP tolerance
+///     (computed floats per fixture-discipline rule); k_frust bit-exact.
+///   * Posterior.covariance via LIBM_WIDE on each of the 4 cells.
+///   * Posterior.noise_variance bit-exact (input echo).
+///   * Posterior.log_evidence: tolerated when Some, bit-exact null vs
+///     bit-exact null otherwise.
+///   * Posterior.modes count + per-element fields (LIBM_WIDE on floats).
+///   * Posterior.notes bit-exact (the only float-formatted token would
+///     be top_k, an integer — no Python/Rust `f"{0.0}"` vs `format!`
+///     divergence).
+///   * ValidationReport flags + round_trip_residual.
+///   * Provenance solver_version, operation, dispatch_path,
+///     table_version. timestamps + notes excluded (same documented
+///     asymmetry as the regime_at parity test).
+#[test]
+fn operation_output_posterior_python_to_rust_parity() {
+    let fixture = load_fixture();
+    let cases = fixture["operation_output_posterior"]
+        .as_array()
+        .expect("operation_output_posterior array");
+    assert!(
+        !cases.is_empty(),
+        "operation_output_posterior fixture must be non-empty",
+    );
+
+    for case in cases {
+        let label = case["label"].as_str().unwrap_or("<unlabeled>");
+        let inputs = &case["inputs"];
+        let tau_obs = inputs["tau_obs"].as_f64().expect("tau_obs");
+        let noise_variance = inputs["noise_variance"].as_f64().expect("noise_variance");
+        let top_k = inputs["top_k"].as_u64().expect("top_k") as usize;
+        let s_chit = inputs["s_chit"].as_f64().expect("s_chit");
+        let s_gamma_AB = inputs["s_gamma_AB"].as_f64().expect("s_gamma_AB");
+
+        let target = posterior_substrate(s_chit, s_gamma_AB, tau_obs);
+        let (field, grid_opt) = build_posterior_field(label);
+        let out = forward_sweep_invert_posterior_wrapped(
+            &target,
+            &field,
+            tau_obs,
+            grid_opt.as_deref(),
+            noise_variance,
+            false,
+            None,
+            top_k,
+        )
+        .unwrap_or_else(|e| panic!("{label}: wrapped posterior errored: {e:?}"));
+
+        let expected = &case["output"];
+        let py_value = &expected["value"];
+
+        // value.mean
+        let py_mean = &py_value["mean"];
+        assert_close(
+            out.value.mean.chit,
+            py_mean["chit"].as_f64().unwrap(),
+            LIBM_WIDE,
+            &format!("{label}: mean.chit"),
+        );
+        assert_close(
+            out.value.mean.gamma_AB,
+            py_mean["gamma_AB"].as_f64().unwrap(),
+            LIBM_WIDE,
+            &format!("{label}: mean.gamma_AB"),
+        );
+        assert_eq!(
+            out.value.mean.k_frust,
+            py_mean["k_frust"].as_bool().unwrap(),
+            "{label}: mean.k_frust",
+        );
+
+        // value.covariance — LIBM_WIDE per cell.
+        let py_cov = mat_f(&py_value["covariance"]);
+        for i in 0..2 {
+            for j in 0..2 {
+                assert_close(
+                    out.value.covariance[i][j],
+                    py_cov[i][j],
+                    LIBM_WIDE,
+                    &format!("{label}: covariance[{i}][{j}]"),
+                );
+            }
+        }
+
+        // value.noise_variance — input echo, bit-exact.
+        assert_eq!(
+            out.value.noise_variance.to_bits(),
+            py_value["noise_variance"].as_f64().unwrap().to_bits(),
+            "{label}: noise_variance",
+        );
+
+        // value.log_evidence — Option<f64>; tolerated when Some.
+        let py_le = &py_value["log_evidence"];
+        match (out.value.log_evidence, py_le) {
+            (None, v) if v.is_null() => (),
+            (Some(actual), v) if v.is_f64() => {
+                assert_close(
+                    actual,
+                    v.as_f64().unwrap(),
+                    LIBM_WIDE,
+                    &format!("{label}: log_evidence"),
+                );
+            }
+            other => panic!(
+                "{label}: log_evidence mismatch — Rust {:?}, Python {py_le}",
+                other.0,
+            ),
+        }
+
+        // value.modes — count + element fields. Python's emit-condition is
+        // tuple-equality on f64 (bit-exact); Rust mirrors via to_bits()
+        // comparison. Both impls evaluate the same numerical inputs, so
+        // the emit decision agrees.
+        let py_modes = py_value["modes"].as_array().expect("modes array");
+        assert_eq!(
+            out.value.modes.len(),
+            py_modes.len(),
+            "{label}: modes.len",
+        );
+        for (i, (rust_mode, py_mode)) in out.value.modes.iter().zip(py_modes).enumerate() {
+            assert_close(
+                rust_mode.chit,
+                py_mode["chit"].as_f64().unwrap(),
+                LIBM_WIDE,
+                &format!("{label}: modes[{i}].chit"),
+            );
+            assert_close(
+                rust_mode.gamma_AB,
+                py_mode["gamma_AB"].as_f64().unwrap(),
+                LIBM_WIDE,
+                &format!("{label}: modes[{i}].gamma_AB"),
+            );
+            assert_eq!(
+                rust_mode.k_frust,
+                py_mode["k_frust"].as_bool().unwrap(),
+                "{label}: modes[{i}].k_frust",
+            );
+        }
+
+        // value.notes — bit-exact (no float-format divergence in these strings).
+        let py_notes = py_value["notes"]
+            .as_array()
+            .expect("notes array")
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(out.value.notes, py_notes, "{label}: notes");
+
+        // validation flags + round_trip_residual (matches regime_at parity).
+        assert_eq!(
+            out.validation.asymptotic_closure_compliant,
+            expected["validation"]["asymptotic_closure_compliant"]
+                .as_bool()
+                .unwrap(),
+            "{label}: asymptotic_closure_compliant",
+        );
+        assert_eq!(
+            out.validation.k_frust_invariant,
+            expected["validation"]["k_frust_invariant"].as_bool().unwrap(),
+            "{label}: k_frust_invariant",
+        );
+        let py_rt = &expected["validation"]["round_trip_residual"];
+        assert!(
+            py_rt.is_null() && out.validation.round_trip_residual.is_none(),
+            "{label}: posterior wrapped variant always emits None round_trip_residual",
+        );
+
+        // provenance fields (timestamps + notes excluded).
+        assert_eq!(
+            out.provenance.solver_version,
+            expected["provenance"]["solver_version"].as_str().unwrap(),
+            "{label}: solver_version",
+        );
+        assert_eq!(
+            out.provenance.solver_version, SOLVER_VERSION,
+            "{label}: Rust SOLVER_VERSION must equal Python __version__",
+        );
+        assert_eq!(
+            out.provenance.operation,
+            expected["provenance"]["operation"].as_str().unwrap(),
+            "{label}: operation",
+        );
+        assert_eq!(
+            out.provenance.dispatch_path,
+            parse_dispatch_path(
+                expected["provenance"]["dispatch_path"].as_str().unwrap()
+            ),
+            "{label}: dispatch_path",
+        );
+        let py_tv = expected["provenance"]["table_version"].as_str();
+        assert_eq!(
+            out.provenance.table_version.as_deref(),
+            py_tv,
+            "{label}: table_version",
+        );
+    }
+}
+
+fn posterior_substrate(s_chit: f64, s_gamma_AB: f64, tau_obs: f64) -> SubstrateState {
+    let mut observables: BTreeMap<String, f64> = BTreeMap::new();
+    observables.insert("substrate_chit".to_string(), s_chit);
+    observables.insert("substrate_gamma_AB".to_string(), s_gamma_AB);
+    SubstrateState {
+        tau_obs,
+        label: None,
+        axes: BTreeMap::new(),
+        observables,
+    }
+}
+
+fn build_posterior_field(label: &str) -> (TranslationField, Option<Vec<[f64; 2]>>) {
+    let origin = TranslationRule {
+        operating_point: OperatingPoint {
+            label: "origin".to_string(),
+            gt: Gt::S,
+            axes: BTreeMap::new(),
+        },
+        xdot_choice: "default".to_string(),
+        canonical: CanonicalPoint {
+            chit: 0.0,
+            gamma_AB: 0.0,
+            k_frust: false,
+            method: "test".to_string(),
+            extras: BTreeMap::new(),
+        },
+    };
+    let lookup_rule = |label: &str, chit: f64, gamma_AB: f64| TranslationRule {
+        operating_point: OperatingPoint {
+            label: label.to_string(),
+            gt: Gt::S,
+            axes: {
+                let mut m: BTreeMap<String, Value> = BTreeMap::new();
+                m.insert("tau_obs".to_string(), Value::from(1.0));
+                m
+            },
+        },
+        xdot_choice: "default".to_string(),
+        canonical: CanonicalPoint {
+            chit,
+            gamma_AB,
+            k_frust: false,
+            method: "test".to_string(),
+            extras: BTreeMap::new(),
+        },
+    };
+    match label {
+        "tangent_flow_identity" => (
+            TranslationField::TangentFlow(TangentFlowField {
+                direction: Direction::Forward,
+                rule_at_origin: origin,
+                scaling: ScalingRule {
+                    tau_obs_ref: 1.0,
+                    delta_gamma: 0.0,
+                    delta_chit: 0.0,
+                    refinement: None,
+                },
+                description: None,
+            }),
+            None,
+        ),
+        "tangent_flow_nonidentity" => (
+            TranslationField::TangentFlow(TangentFlowField {
+                direction: Direction::Forward,
+                rule_at_origin: origin,
+                scaling: ScalingRule {
+                    tau_obs_ref: 1.0,
+                    delta_gamma: 0.5,
+                    delta_chit: 0.3,
+                    refinement: None,
+                },
+                description: None,
+            }),
+            None,
+        ),
+        "lookup_table_top_k_5" | "lookup_table_k_eq_1" => (
+            TranslationField::LookupTable(LookupTableField {
+                direction: Direction::Forward,
+                rule: vec![
+                    lookup_rule("a", 0.5, -0.3),
+                    lookup_rule("b", 0.8, 0.2),
+                    lookup_rule("c", -0.4, 0.4),
+                ],
+                description: None,
+            }),
+            Some(vec![[0.5, -0.3], [0.8, 0.2], [-0.4, 0.4]]),
+        ),
+        other => panic!("unknown posterior parity label: {other}"),
     }
 }
 
