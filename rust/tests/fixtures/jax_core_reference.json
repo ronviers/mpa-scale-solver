@@ -3857,5 +3857,186 @@
         }
       }
     }
+  ],
+  "sidecar_wire_format": [
+    {
+      "label": "banach_4frame",
+      "inputs": {
+        "chit_0": 1.5,
+        "gamma_AB_0": -0.5,
+        "tau_obs_grid": [
+          0.5,
+          1.0,
+          2.0,
+          3.0
+        ]
+      },
+      "sidecar": {
+        "wire_version": "1.0",
+        "version": "1.0.0",
+        "driver_profile_id": "banach",
+        "driver_profile_version": "1.0.0",
+        "rounding_decimals": 6,
+        "tau_obs_grid": [
+          0.5,
+          1.0,
+          2.0,
+          3.0
+        ],
+        "substrate_grid": [
+          {
+            "tau_obs": 0.5,
+            "label": "banach",
+            "axes": {
+              "tau_obs": 0.5
+            },
+            "observables": {
+              "substrate_chit": 0.9097959895689501,
+              "substrate_gamma_AB": -0.3032653298563167,
+              "chit": 0.9097959895689501,
+              "gamma_AB": -0.3032653298563167
+            }
+          },
+          {
+            "tau_obs": 1.0,
+            "label": "banach",
+            "axes": {
+              "tau_obs": 1.0
+            },
+            "observables": {
+              "substrate_chit": 0.5518191617571635,
+              "substrate_gamma_AB": -0.18393972058572117,
+              "chit": 0.5518191617571635,
+              "gamma_AB": -0.18393972058572117
+            }
+          },
+          {
+            "tau_obs": 2.0,
+            "label": "banach",
+            "axes": {
+              "tau_obs": 2.0
+            },
+            "observables": {
+              "substrate_chit": 0.20300292485491905,
+              "substrate_gamma_AB": -0.06766764161830635,
+              "chit": 0.20300292485491905,
+              "gamma_AB": -0.06766764161830635
+            }
+          },
+          {
+            "tau_obs": 3.0,
+            "label": "banach",
+            "axes": {
+              "tau_obs": 3.0
+            },
+            "observables": {
+              "substrate_chit": 0.07468060255179591,
+              "substrate_gamma_AB": -0.024893534183931972,
+              "chit": 0.07468060255179591,
+              "gamma_AB": -0.024893534183931972
+            }
+          }
+        ],
+        "canonical_grid": [
+          {
+            "chit": 0.9097959895689501,
+            "gamma_AB": -0.3032653298563167,
+            "k_frust": false
+          },
+          {
+            "chit": 0.5518191617571635,
+            "gamma_AB": -0.18393972058572117,
+            "k_frust": false
+          },
+          {
+            "chit": 0.20300292485491905,
+            "gamma_AB": -0.06766764161830635,
+            "k_frust": false
+          },
+          {
+            "chit": 0.07468060255179591,
+            "gamma_AB": -0.024893534183931972,
+            "k_frust": false
+          }
+        ],
+        "forward_lookup": {
+          "4606369933398442752:13822506793336659782:4602678819172646912": {
+            "tau_obs": 0.5,
+            "label": "banach",
+            "axes": {
+              "tau_obs": 0.5
+            },
+            "observables": {
+              "substrate_chit": 0.9097959895689501,
+              "substrate_gamma_AB": -0.3032653298563167,
+              "chit": 0.9097959895689501,
+              "gamma_AB": -0.3032653298563167
+            }
+          },
+          "4603145563230828335:13819167194068979464:4607182418800017408": {
+            "tau_obs": 1.0,
+            "label": "banach",
+            "axes": {
+              "tau_obs": 1.0
+            },
+            "observables": {
+              "substrate_chit": 0.5518191617571635,
+              "substrate_gamma_AB": -0.18393972058572117,
+              "chit": 0.5518191617571635,
+              "gamma_AB": -0.18393972058572117
+            }
+          },
+          "4596481974171776166:13812912450791299244:4611686018427387904": {
+            "tau_obs": 2.0,
+            "label": "banach",
+            "axes": {
+              "tau_obs": 2.0
+            },
+            "observables": {
+              "substrate_chit": 0.20300292485491905,
+              "substrate_gamma_AB": -0.06766764161830635,
+              "chit": 0.20300292485491905,
+              "gamma_AB": -0.06766764161830635
+            }
+          },
+          "4590045753843511424:13806204465247120456:4613937818241073152": {
+            "tau_obs": 3.0,
+            "label": "banach",
+            "axes": {
+              "tau_obs": 3.0
+            },
+            "observables": {
+              "substrate_chit": 0.07468060255179591,
+              "substrate_gamma_AB": -0.024893534183931972,
+              "chit": 0.07468060255179591,
+              "gamma_AB": -0.024893534183931972
+            }
+          }
+        },
+        "inverse_lookup": {
+          "4606369933398442752:13822506793336659782:4602678819172646912": {
+            "chit": 0.9097959895689501,
+            "gamma_AB": -0.3032653298563167,
+            "k_frust": false
+          },
+          "4603145563230828335:13819167194068979464:4607182418800017408": {
+            "chit": 0.5518191617571635,
+            "gamma_AB": -0.18393972058572117,
+            "k_frust": false
+          },
+          "4596481974171776166:13812912450791299244:4611686018427387904": {
+            "chit": 0.20300292485491905,
+            "gamma_AB": -0.06766764161830635,
+            "k_frust": false
+          },
+          "4590045753843511424:13806204465247120456:4613937818241073152": {
+            "chit": 0.07468060255179591,
+            "gamma_AB": -0.024893534183931972,
+            "k_frust": false
+          }
+        },
+        "ambiguity_regions": []
+      }
+    }
   ]
 }

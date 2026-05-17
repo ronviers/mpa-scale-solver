@@ -7,18 +7,21 @@
 //! is mpa-conform's curator-path job; this module provides the dispatch
 //! helpers.
 //!
-//! ## Cross-language parity caveat
+//! ## Cross-language parity (resolved)
 //!
-//! Python rounds the float key via the built-in `round(x, n)` which uses
-//! banker's rounding via CPython's `dtoa`-based pipeline. Rust here uses
-//! `(x * 10^n).round_ties_even() / 10^n`. These agree for the bulk of
-//! double-precision inputs but can diverge for values exactly halfway
-//! between two representable decimals — a producer/consumer pair must
-//! either both be Python or both be Rust until the wire-format parity
-//! check lands. (BLOCK_IN §v6: cross-language JSON parity for shape-
-//! bearing types lands when the first module with JSON I/O ports.)
-//! For now Rust-Rust round-trips are bit-identical; Python-Rust round-
-//! trips are at the producer's mercy.
+//! Python and Rust both round via IEEE-754 `roundTiesToEven` on the
+//! scaled value: Python's `float(np.rint(x * 10**n)) / 10**n` produces
+//! bit-identical f64 to Rust's `(x * 10^n).round_ties_even() / 10^n`
+//! for every finite input. (Python's prior `round(x, n)` builtin used
+//! dtoa-based decimal rounding that could diverge on `.x5`-decimal
+//! binary halfway cases — this was the session-7 retro's other fix.)
+//!
+//! The full JSON wire format is specified in `docs/SIDECAR_FORMAT.md`:
+//! lookup keys are `':'`-joined `f64::to_bits` decimal strings of the
+//! rounded floats; `InverseLookupSidecar` carries `wire_version` +
+//! `rounding_decimals` as metadata so consumers can interpret the
+//! artifact without out-of-band assumptions. Cross-language parity is
+//! exercised by `rust/tests/bit_identity.rs::sidecar_python_to_rust_parity`.
 
 use crate::types::{CanonicalState, InverseLookupSidecar, SidecarKey, SubstrateState};
 

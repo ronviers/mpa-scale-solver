@@ -16,8 +16,16 @@
 - The `BanachSubstrate` calibration class + closed-form `state_at(nu)`
   used as the v1 camera-test fixture. Authoritative spec lives in
   mpa-conform; this repo vendors the runtime class.
-- The `InverseLookupSidecar` type + dispatch helpers (sidecar production
-  is mpa-conform's curator-path job; we only consume).
+- The `InverseLookupSidecar` type + dispatch helpers + the cross-language
+  JSON wire format (`encode_sidecar_to_json` / `decode_sidecar_from_json`
+  in Python's `sidecar.py`; matching `serde_json` deserialization on the
+  Rust port). Sidecar **production** is still mpa-conform's curator-path
+  job; we only consume. The wire-format spec (`docs/SIDECAR_FORMAT.md`
+  v1.0) is the authority — mpa-conform writes producers to it. Spec
+  load-bearing points: bit-deterministic rounding (`float(np.rint(x*10**n))/10**n`
+  in Python; `(x*10^n).round_ties_even()/10^n` in Rust — identical f64
+  bits); `':'`-joined `f64::to_bits` decimal-string key encoding;
+  `wire_version` + `rounding_decimals` carried with every sidecar.
 - The ported gFDR analytical forward model (`gfdr_model.py` ←
   `mpa-auditor/math/gfdr-model.js`).
 - The synthetic substrate signal generator + per-frame

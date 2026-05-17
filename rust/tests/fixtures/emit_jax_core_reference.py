@@ -36,7 +36,11 @@ from mpa_scale_solver.operations import (
 )
 import hashlib
 
+import numpy as np
+
+from mpa_scale_solver.banach import BanachSubstrate
 from mpa_scale_solver.provenance import make_provenance
+from mpa_scale_solver.sidecar import encode_sidecar_to_json
 from mpa_scale_solver.sidecar import round_key as sidecar_round_key
 from mpa_scale_solver.types import (
     CanonicalPoint,
@@ -863,6 +867,36 @@ def cases_provenance_hash() -> list[dict]:
     return out
 
 
+def cases_sidecar_wire_format() -> list[dict]:
+    """End-to-end JSON wire-format parity for InverseLookupSidecar.
+
+    Builds a small Banach sidecar (4 tau frames), encodes via the
+    spec-conformant `encode_sidecar_to_json`, and emits the full JSON
+    object. The Rust test deserializes via serde and exercises
+    `lookup_forward` + `lookup_inverse` on every grid point; the
+    contract is byte-identical lookup behavior on both sides (a
+    Python-emitted sidecar is loaded by Rust and serves the same
+    queries the Python version would).
+
+    Single fixture entry; this is a full-object parity test, not a
+    sweep of inputs. The Banach substrate is the v1 reference
+    producer (`banach.BanachSubstrate.build_sidecar`).
+    """
+    substrate = BanachSubstrate(chit_0=1.5, gamma_AB_0=-0.5)
+    tau_grid = np.array([0.5, 1.0, 2.0, 3.0])
+    sidecar = substrate.build_sidecar(tau_grid)
+    sidecar_json = encode_sidecar_to_json(sidecar)
+    return [{
+        "label": "banach_4frame",
+        "inputs": {
+            "chit_0": substrate.chit_0,
+            "gamma_AB_0": substrate.gamma_AB_0,
+            "tau_obs_grid": list(tau_grid),
+        },
+        "sidecar": sidecar_json,
+    }]
+
+
 def cases_operation_output_regime_at() -> list[dict]:
     """End-to-end wrapped-variant JSON parity for `regime_at_wrapped`.
 
@@ -945,6 +979,8 @@ PRIMITIVES = {
     # session 7 — provenance + wrapped-variant wire parity
     "provenance_hash": cases_provenance_hash,
     "operation_output_regime_at": cases_operation_output_regime_at,
+    # session 7 followup — sidecar wire-format lock-in (SIDECAR_FORMAT.md v1.0)
+    "sidecar_wire_format": cases_sidecar_wire_format,
 }
 
 

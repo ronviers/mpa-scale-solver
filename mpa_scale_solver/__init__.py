@@ -124,7 +124,17 @@ from .symbolic_query import (
 from . import plotting  # noqa: F401 — v4 default plot hooks (lazy backends)
 from .flow import flow
 from .banach import BanachSubstrate, build_sidecar_for_banach
-from .sidecar import lookup_forward, lookup_inverse, round_key
+from .sidecar import (
+    DEFAULT_ROUNDING_DECIMALS,
+    WIRE_VERSION,
+    decode_sidecar_from_json,
+    decode_sidecar_key,
+    encode_sidecar_key,
+    encode_sidecar_to_json,
+    lookup_forward,
+    lookup_inverse,
+    round_key,
+)
 from .provenance import make_provenance, provenance_hash
 from .validation import validation_flags_bitfield
 from .gfdr_model import (
@@ -234,6 +244,13 @@ __all__ = [
     "lookup_forward",
     "lookup_inverse",
     "round_key",
+    # v1 sidecar JSON wire format (cross-language artifact contract)
+    "encode_sidecar_to_json",
+    "decode_sidecar_from_json",
+    "encode_sidecar_key",
+    "decode_sidecar_key",
+    "WIRE_VERSION",
+    "DEFAULT_ROUNDING_DECIMALS",
     "make_provenance",
     "provenance_hash",
     "validation_flags_bitfield",

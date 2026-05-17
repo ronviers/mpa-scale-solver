@@ -503,6 +503,13 @@ pub enum IntentDiagnostics {
 /// Curator-precomputed inverse-lookup table. Sidecar production lives in
 /// mpa-conform's curator path; this crate consumes via
 /// `operations::forward_sweep_invert`'s optional `sidecar` argument.
+///
+/// `wire_version` + `rounding_decimals` are the cross-language artifact
+/// contract carried with the sidecar so consumers can interpret an
+/// emitted JSON without out-of-band assumptions. Both have serde
+/// defaults so older JSON written before these fields existed still
+/// parses. See `docs/SIDECAR_FORMAT.md` for the authoritative wire
+/// format spec.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InverseLookupSidecar {
     pub version: String,
@@ -515,4 +522,16 @@ pub struct InverseLookupSidecar {
     pub inverse_lookup: BTreeMap<SidecarKey, CanonicalState>,
     #[serde(default)]
     pub ambiguity_regions: Vec<BTreeMap<String, serde_json::Value>>,
+    #[serde(default = "default_wire_version")]
+    pub wire_version: String,
+    #[serde(default = "default_rounding_decimals")]
+    pub rounding_decimals: i32,
+}
+
+fn default_wire_version() -> String {
+    "1.0".to_string()
+}
+
+fn default_rounding_decimals() -> i32 {
+    6
 }

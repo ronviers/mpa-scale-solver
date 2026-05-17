@@ -576,6 +576,27 @@ capability lands in v5 first via a v5.x release.
     to launder a 1-ULP JSON drift; that workaround was retired in the
     same session — the float-in-JSON form was the wrong contract for
     a rational hash. See the **fixture discipline** note below.
+  - ~~`InverseLookupSidecar` wire-format parity~~ — landed session 7
+    followup. `docs/SIDECAR_FORMAT.md` is now the authoritative
+    spec (wire_version 1.0): top-level JSON shape, lookup-key
+    encoding (`':'`-joined `f64::to_bits` decimal strings of
+    rounded floats), IEEE-754 roundTiesToEven on the scaled value
+    as the canonical rounding algorithm. Python's
+    `mpa_scale_solver.sidecar.encode_sidecar_to_json` /
+    `decode_sidecar_from_json` produce / consume the spec; Rust's
+    `serde_json::from_str::<InverseLookupSidecar>` consumes the
+    same shape. Python's `round_key` switched from the dtoa-based
+    `round(x, n)` to `float(np.rint(x*10**n))/10**n` so it matches
+    Rust's `round_ties_even`-based rounding bit-for-bit. New
+    `wire_version: String` + `rounding_decimals: i32` fields on
+    `InverseLookupSidecar` (both Python and Rust) carry the
+    contract with the artifact. Parity test:
+    `bit_identity.rs::sidecar_python_to_rust_parity` (Banach v1
+    reference producer at 4 tau frames; every grid point exercises
+    both `lookup_forward` and `lookup_inverse` with bit-identical
+    expected results). The session-9 sidecar wire-format question
+    is closed: mpa-conform's curator path now writes to a frozen
+    spec rather than picking a format ad-hoc.
 - **Fixture discipline — no bit-exact floats in JSON.** Surfaced
   during the session-7 retro on `float_roundtrip`. JSON stores floats
   as decimal strings; round-tripping IEEE-754 doubles is brittle
@@ -675,22 +696,20 @@ capability lands in v5 first via a v5.x release.
     installer intervention. `wasm32-unknown-unknown` target was
     bootstrapped at session 1; only `wasm-pack` / `wasm-bindgen-cli`
     (`cargo install wasm-pack`) needs to land at session-9 time.
-    **Two open design questions to settle at session-9 time:**
-    (1) `OperationOutput<T>` is generic — pyo3 cannot expose
+    **One open design question to settle at session-9 time:**
+    `OperationOutput<T>` is generic — pyo3 cannot expose
     parameterized Rust types directly. Choose between per-`T`
     concrete wrappers (`PyOperationOutputSubstrateState`,
     `PyOperationOutputCanonicalState`, ...) or a dict-shaped Python
     view (`{value: ..., validation: {...}, provenance: {...}}` via
     serde_json). The dict-shape is thinner and matches Python's
     existing `dataclasses.asdict` consumer surface — leaning
-    toward it. (2) `InverseLookupSidecar` wire format is currently
-    undefined: this crate consumes whatever mpa-conform's curator
-    path emits, but the producer side has not landed in mpa-conform
-    yet. The Rust `SidecarKey`'s `':'`-joined-bits string form is a
-    placeholder that will need to either match the future Python
-    emitter or trigger a Python-side renormalize. **Not blocking
-    for session 9** (no sidecar JSON I/O ports at session 9), but
-    flag for the mpa-conform curator session.
+    toward it. **InverseLookupSidecar wire format is now locked**
+    (session-7 followup): `docs/SIDECAR_FORMAT.md` v1.0 is the
+    authoritative spec, Python and Rust both implement it, and
+    `bit_identity.rs::sidecar_python_to_rust_parity` exercises the
+    end-to-end round-trip. mpa-conform's curator session writes
+    producers to the frozen spec.
   The session-2 fixture lesson (specify `(candidate, target)`
   pairs explicitly; never generate `target` from one impl and
   test the other) was load-bearing again in session 4: see the

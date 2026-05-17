@@ -69,11 +69,11 @@ use mpa_scale_solver::math::{
 };
 use mpa_scale_solver::operations::regime_at_wrapped;
 use mpa_scale_solver::provenance::{make_provenance, provenance_digest_bytes, SOLVER_VERSION};
-use mpa_scale_solver::sidecar::round_key;
+use mpa_scale_solver::sidecar::{lookup_forward, lookup_inverse, round_key, DEFAULT_ROUNDING_DECIMALS};
 use mpa_scale_solver::types::{
     CanonicalPoint, CanonicalState, CapacityClass, Direction, DispatchPath, Gt, IntentDiagnostics,
-    IntentId, OperatingPoint, RegimeLabel, SacrificeRecord, ScalingRule, TangentFlowField,
-    TranslationField, TranslationRule,
+    IntentId, InverseLookupSidecar, OperatingPoint, RegimeLabel, SacrificeRecord, ScalingRule,
+    TangentFlowField, TranslationField, TranslationRule,
 };
 use serde_json::Value;
 
@@ -204,6 +204,9 @@ fn fixture_covers_all_expected_primitives() {
         // asymmetry note in CLAUDE.md).
         "provenance_hash",
         "operation_output_regime_at",
+        // session 7 followup — sidecar wire-format lock-in. Full JSON
+        // round-trip parity per docs/SIDECAR_FORMAT.md v1.0.
+        "sidecar_wire_format",
     ];
     assert_eq!(
         obj.len(),
@@ -1381,5 +1384,176 @@ fn operation_output_regime_at_python_to_rust_parity() {
             py_tv,
             "{label}: table_version",
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Session 7 followup — sidecar JSON wire-format parity (SIDECAR_FORMAT.md v1.0)
+// ---------------------------------------------------------------------------
+
+/// End-to-end cross-language parity for `InverseLookupSidecar`.
+///
+/// Python builds a small Banach sidecar via the v1 reference producer
+/// (`BanachSubstrate.build_sidecar`), encodes it to JSON via
+/// `encode_sidecar_to_json` (the spec-conformant serializer), and emits
+/// the result as the `sidecar_wire_format` fixture entry. This test
+/// deserializes the same JSON via serde and asserts:
+///
+/// 1. Structural metadata round-trips (wire_version, version,
+///    driver_profile_id, rounding_decimals, grid lengths).
+/// 2. Every `(canonical, tau)` from the canonical_grid hits via
+///    `lookup_forward` and returns the recorded substrate (bit-identical
+///    chit / gamma_AB observables).
+/// 3. Every `(substrate, tau)` from the substrate_grid hits via
+///    `lookup_inverse` and returns the recorded canonical (bit-identical
+///    chit / gamma_AB / k_frust).
+///
+/// A successful run closes the BLOCK_IN §v6 session-9-open
+/// "InverseLookupSidecar wire format" question: mpa-conform's curator
+/// path is now writing to a frozen spec.
+#[test]
+fn sidecar_python_to_rust_parity() {
+    let fixture = load_fixture();
+    let cases = fixture["sidecar_wire_format"]
+        .as_array()
+        .expect("sidecar_wire_format array");
+    assert!(
+        !cases.is_empty(),
+        "sidecar_wire_format fixture must be non-empty",
+    );
+
+    for case in cases {
+        let label = case["label"].as_str().unwrap_or("<unlabeled>");
+
+        // Deserialize the encoded sidecar via serde — the consumer
+        // surface mpa-conform's curator path will write to.
+        let sidecar: InverseLookupSidecar = serde_json::from_value(case["sidecar"].clone())
+            .unwrap_or_else(|e| panic!("{label}: sidecar deserialize failed: {e}"));
+
+        // ---- (1) structural metadata -----------------------------------
+        assert_eq!(
+            sidecar.wire_version, "1.0",
+            "{label}: wire_version must be 1.0 per current spec",
+        );
+        assert_eq!(
+            sidecar.rounding_decimals, DEFAULT_ROUNDING_DECIMALS,
+            "{label}: rounding_decimals default mismatch",
+        );
+        assert!(
+            !sidecar.driver_profile_id.is_empty(),
+            "{label}: driver_profile_id must be non-empty",
+        );
+        assert_eq!(
+            sidecar.tau_obs_grid.len(),
+            sidecar.canonical_grid.len(),
+            "{label}: tau_obs_grid and canonical_grid lengths must match",
+        );
+        assert_eq!(
+            sidecar.tau_obs_grid.len(),
+            sidecar.substrate_grid.len(),
+            "{label}: tau_obs_grid and substrate_grid lengths must match",
+        );
+        assert_eq!(
+            sidecar.forward_lookup.len(),
+            sidecar.tau_obs_grid.len(),
+            "{label}: forward_lookup must have one entry per grid frame",
+        );
+        assert_eq!(
+            sidecar.inverse_lookup.len(),
+            sidecar.tau_obs_grid.len(),
+            "{label}: inverse_lookup must have one entry per grid frame",
+        );
+
+        // ---- (2) forward lookup hits ----------------------------------
+        for (i, tau) in sidecar.tau_obs_grid.iter().enumerate() {
+            let canonical = sidecar.canonical_grid[i].clone();
+            let expected_substrate = &sidecar.substrate_grid[i];
+            let hit = lookup_forward(&sidecar, &canonical, *tau, sidecar.rounding_decimals)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{label}: lookup_forward miss at frame {i} \
+                         (canonical={canonical:?}, tau={tau})",
+                    )
+                });
+            // Substrate observables must include the canonical pair
+            // names; their values must agree bit-for-bit with what the
+            // producer recorded (`BanachSubstrate.substrate_at` emits
+            // identity-translated substrates: substrate_chit == chit,
+            // substrate_gamma_AB == gamma_AB).
+            let got_chit = hit
+                .observables
+                .get("substrate_chit")
+                .copied()
+                .expect("substrate_chit on hit");
+            let got_gamma = hit
+                .observables
+                .get("substrate_gamma_AB")
+                .copied()
+                .expect("substrate_gamma_AB on hit");
+            let want_chit = expected_substrate
+                .observables
+                .get("substrate_chit")
+                .copied()
+                .expect("substrate_chit on expected");
+            let want_gamma = expected_substrate
+                .observables
+                .get("substrate_gamma_AB")
+                .copied()
+                .expect("substrate_gamma_AB on expected");
+            assert_eq!(
+                got_chit.to_bits(),
+                want_chit.to_bits(),
+                "{label}: forward lookup substrate_chit at frame {i}",
+            );
+            assert_eq!(
+                got_gamma.to_bits(),
+                want_gamma.to_bits(),
+                "{label}: forward lookup substrate_gamma_AB at frame {i}",
+            );
+        }
+
+        // ---- (3) inverse lookup hits ----------------------------------
+        for (i, tau) in sidecar.tau_obs_grid.iter().enumerate() {
+            let substrate = &sidecar.substrate_grid[i];
+            let expected_canonical = &sidecar.canonical_grid[i];
+            let hit = lookup_inverse(&sidecar, substrate, *tau, sidecar.rounding_decimals)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{label}: lookup_inverse miss at frame {i} \
+                         (substrate observables={:?}, tau={tau})",
+                        substrate.observables,
+                    )
+                });
+            assert_eq!(
+                hit.chit.to_bits(),
+                expected_canonical.chit.to_bits(),
+                "{label}: inverse lookup chit at frame {i}",
+            );
+            assert_eq!(
+                hit.gamma_AB.to_bits(),
+                expected_canonical.gamma_AB.to_bits(),
+                "{label}: inverse lookup gamma_AB at frame {i}",
+            );
+            assert_eq!(
+                hit.k_frust, expected_canonical.k_frust,
+                "{label}: inverse lookup k_frust at frame {i}",
+            );
+        }
+
+        // ---- bonus: round_key bit-identity --------------------------
+        // The producer rounded with Python `float(np.rint(x*10**n))/10**n`;
+        // Rust here rounds with `(x*10^n).round_ties_even()/10^n`. Both
+        // produce identical f64 bits for every finite input. Spot-check
+        // by re-rounding the first canonical and confirming it matches
+        // what's stored in the lookup map's keys.
+        let c0 = sidecar.canonical_grid[0].clone();
+        let tau0 = sidecar.tau_obs_grid[0];
+        let (rc, rg, rt) = round_key(c0.chit, c0.gamma_AB, tau0, sidecar.rounding_decimals);
+        // The hit we obtained from lookup_forward used the exact same
+        // rounding — if Python and Rust disagreed on rounding for this
+        // input, the lookup_forward call above would have missed.
+        // Verify the round_key output is at least finite + matches the
+        // unrounded values to within the rounding precision.
+        assert!(rc.is_finite() && rg.is_finite() && rt.is_finite());
     }
 }

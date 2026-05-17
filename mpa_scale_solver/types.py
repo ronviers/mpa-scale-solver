@@ -541,6 +541,13 @@ class InverseLookupSidecar:
     (chit, gamma_AB, tau_obs) tuples — see `sidecar.py` for the rounding
     contract. `ambiguity_regions` records multi-valued inverse zones so
     consumers can opt to fall through to the compute path even on a hit.
+
+    `wire_version` + `rounding_decimals` are the cross-language
+    artifact contract carried with the sidecar so the Rust port
+    (`rust/src/types.rs::InverseLookupSidecar`) and any future
+    consumer can interpret an emitted JSON without out-of-band
+    assumptions. See `docs/SIDECAR_FORMAT.md` for the full
+    wire-format spec.
     """
 
     version: str
@@ -552,3 +559,5 @@ class InverseLookupSidecar:
     forward_lookup: dict[tuple[float, float, float], SubstrateState]
     inverse_lookup: dict[tuple[float, float, float], CanonicalState]
     ambiguity_regions: tuple[dict[str, Any], ...] = ()
+    wire_version: str = "1.0"
+    rounding_decimals: int = 6

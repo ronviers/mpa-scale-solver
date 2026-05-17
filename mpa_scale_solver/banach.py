@@ -223,6 +223,7 @@ class BanachSubstrate:
             forward_lookup=forward_lookup,
             inverse_lookup=inverse_lookup,
             ambiguity_regions=(),
+            rounding_decimals=rounding_decimals,
         )
 
 

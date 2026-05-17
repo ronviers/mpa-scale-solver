@@ -339,6 +339,8 @@ fn inverse_lookup_sidecar_roundtrip() {
         forward_lookup: BTreeMap::from([(k, substrate)]),
         inverse_lookup: BTreeMap::from([(k, canonical)]),
         ambiguity_regions: vec![],
+        wire_version: "1.0".into(),
+        rounding_decimals: 6,
     };
     roundtrip(&sidecar);
 }
