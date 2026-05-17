@@ -34,7 +34,9 @@ from mpa_scale_solver.operations import (
     intent_map as intent_map_op,
     regime_at_wrapped as regime_at_wrapped_op,
 )
-from mpa_scale_solver.provenance import make_provenance, provenance_hash
+import hashlib
+
+from mpa_scale_solver.provenance import make_provenance
 from mpa_scale_solver.sidecar import round_key as sidecar_round_key
 from mpa_scale_solver.types import (
     CanonicalPoint,
@@ -818,7 +820,17 @@ def cases_sacrifice_record() -> list[dict]:
 
 
 def cases_provenance_hash() -> list[dict]:
-    """Hash inputs that cross every Python branch of the encoding."""
+    """Hash inputs that cross every Python branch of the encoding.
+
+    Emits the raw 4-byte blake2b digest as a lowercase hex string
+    rather than the `provenance_hash` float view. Reason: the float
+    is a rational `n / 2^32` value with no ULP tolerance budget, and
+    JSON's decimal-string representation cannot reliably round-trip
+    f64 under naive parsers (serde_json's default lazy parser is 1
+    ULP off on some bit patterns). The digest bytes are the
+    authoritative cross-language contract; the float view is a
+    derived artifact computed identically on both sides.
+    """
     rows = [
         ("apply_translation", DispatchPath.DIRECT_COMPUTE, None),
         ("apply_translation", DispatchPath.TABLE_HIT, "banach-1.0.0"),
@@ -838,13 +850,15 @@ def cases_provenance_hash() -> list[dict]:
     out = []
     for op, dp, tv in rows:
         prov = make_provenance(op, dispatch_path=dp, table_version=tv)
+        payload = f"{prov.solver_version}|{prov.operation}|{prov.dispatch_path.value}|{prov.table_version or ''}".encode("utf-8")
+        digest = hashlib.blake2b(payload, digest_size=4).digest()
         out.append({
             "inputs": {
                 "operation": op,
                 "dispatch_path": dp.value,
                 "table_version": tv,
             },
-            "output": provenance_hash(prov),
+            "output_bits_hex": digest.hex(),
         })
     return out
 

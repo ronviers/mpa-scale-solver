@@ -399,27 +399,37 @@ verbatim. **Two new bit-identity fixtures:** (1) `provenance_hash`
 in `jax_core_reference.json` (12 cases covering every
 `DispatchPath` + null vs non-null `table_version`) +
 `provenance_hash_python_to_rust_parity` in `bit_identity.rs` —
-exact-bit equality on the rational hash; required enabling
-`serde_json/float_roundtrip` because the default lazy parser was
-1 ULP off Python's `json.loads` on one of the 12 hashes (no
-tolerance budget for a rational hash). (2) `operation_output_regime_at`
-(4 cases) + `operation_output_regime_at_python_to_rust_parity`
-— the representative wrapped-variant wire parity. **Asymmetric-
-parity is documented design** for OperationOutput JSON
-emission: timestamps are excluded (non-deterministic across
+stores the raw 4-byte blake2b digest as hex (via the new public
+`provenance::provenance_digest_bytes`) and Rust compares digest
+bytes directly. The initial session-7 commit went through the
+float view + asserted bits, which forced enabling
+`serde_json/float_roundtrip` to fight a 1-ULP JSON parser drift;
+that workaround was retired the same session — the float-in-JSON
+form was the wrong shape for a rational hash. (2)
+`operation_output_regime_at` (4 cases) — the representative
+wrapped-variant wire parity for `OperationOutput<RegimeReading>`.
+**Asymmetric-parity is documented design** for OperationOutput
+JSON emission: timestamps are excluded (non-deterministic across
 process-start epochs) and note strings are excluded (Python's
 `f"{0.0}"` is `"0.0"` but Rust's `format!("{}", 0.0)` is `"0"`
 — a float-format divergence in the diagnostic text; the
-structured ValidationReport flags are bit/string-exact). Notes
-are diagnostic; flags are load-bearing. **167/167 Rust tests
-pass** (108 src unit — was 57, +30 validation + 8 provenance +
-13 wrapped-variant; +24 bit-identity — was 22, +1
+structured ValidationReport flags are bit/string-exact).
+`round_trip_residual` comparison uses `LIBM_WIDE` ULP tolerance
+(preemptive; the slot is `None` for regime_at but session 8's
+posterior parity populates it). **Fixture discipline rule
+emerged from the retro and is now load-bearing for every future
+cross-language parity test:** computed floats use ULP-tolerance
+comparison; rational / digest values store underlying bits as
+hex and compare bytes. JSON cannot bit-roundtrip f64 under naive
+parsers, and `serde_json/float_roundtrip` is the wrong fix (~50 KB
+wasm cost to paper over a fixture-design mistake). Full rule
+lives in the `bit_identity.rs` module docstring. **167/167 Rust
+tests pass** (108 src unit — was 57, +30 validation + 8
+provenance + 13 wrapped-variant; +24 bit-identity — was 22, +1
 provenance_hash + 1 operation_output_regime_at + 17 math + 18
 types_smoke); Python 392/392 still green; WASM build still
-clean. New deps: `blake2 = "0.10"` (default-features off) for
-the blake2b-32 digest, and `serde_json` gains the
-`float_roundtrip` feature (~50 KB to wasm; load-bearing for the
-hash parity).
+clean. Single new dep: `blake2 = "0.10"` (default-features off)
+for the blake2b-32 digest.
 
 
 ## What does NOT live here
@@ -760,31 +770,42 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
     explicit style. **Two new bit-identity fixtures** in
     `jax_core_reference.json` + tests in `bit_identity.rs`:
     (1) `provenance_hash` (12 cases, every `DispatchPath` variant
-    + null vs non-null `table_version`) — exact-bit f64 equality
-    on the rational `n / 2^32` hash; required enabling
-    `serde_json/float_roundtrip` because the default lazy float
-    parser was 1 ULP off Python's `json.loads` on one of the 12
-    hashes (rational hash → no tolerance budget). (2)
+    + null vs non-null `table_version`) — stores the raw 4-byte
+    blake2b digest as hex (via the new public
+    `provenance::provenance_digest_bytes`) and Rust compares digest
+    bytes directly. The initial commit went through the float view
+    + asserted bits, which forced enabling
+    `serde_json/float_roundtrip` to fight a 1-ULP JSON drift; that
+    workaround was retired the same session — the float-in-JSON
+    form was the wrong shape for a rational hash. (2)
     `operation_output_regime_at` (4 cases) — the representative
     wrapped-variant wire parity for `OperationOutput<RegimeReading>`.
     **Asymmetric-parity is documented design** for OperationOutput
     JSON: timestamps excluded (non-deterministic across process-
     start epochs); note strings excluded (Python `f"{0.0}"` is
     `"0.0"`, Rust `format!("{}", 0.0)` is `"0"` — diagnostic-text
-    divergence). Structured ValidationReport flags +
+    divergence). `round_trip_residual` comparison uses `LIBM_WIDE`
+    ULP tolerance (preemptive — populated by session 8's posterior
+    parity). Structured ValidationReport flags +
     Provenance.{solver_version, operation, dispatch_path,
-    table_version} are bit/string-exact. **167/167 Rust tests
+    table_version} are bit/string-exact. **Fixture discipline rule
+    emerged from the float_roundtrip retro and is now load-bearing
+    for every future cross-language parity test:** computed floats
+    use ULP-tolerance comparison; rational / digest values store
+    underlying bits as hex and compare bytes (see
+    `bit_identity.rs` module docstring). **167/167 Rust tests
     pass** (108 src unit — was 57, +30 validation + 8 provenance
     + 13 wrapped-variant; +24 bit-identity — was 22, +1
     provenance_hash + 1 operation_output_regime_at + 17 math + 18
     types_smoke); Python 392/392 still green; `cargo build
-    --release --target wasm32-unknown-unknown` still clean. New
-    deps: `blake2 = "0.10"` (default-features off) for the
-    blake2b-32 digest, and `serde_json` gains the `float_roundtrip`
-    feature (~50 KB to wasm output; load-bearing for the hash
-    parity). Next per BLOCK_IN: session 8 — `forward_sweep_invert_posterior`
-    + `_wrapped` (the session-7-proven wrapped-variant pattern is
-    the template). Details in [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
+    --release --target wasm32-unknown-unknown` still clean. Single
+    new dep: `blake2 = "0.10"` (default-features off) for the
+    blake2b-32 digest. Next per BLOCK_IN: session 8 —
+    `forward_sweep_invert_posterior` + `_wrapped` (the
+    session-7-proven wrapped-variant pattern is the template; one
+    new analytical primitive `tangent_flow_forward_jacobian` needs
+    to land in `math.rs` per the session-7 audit). Details in
+    [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
 
 Each is its own session, sequenced by the user via
 `mpa-conform/docs/ROADMAP.md`.

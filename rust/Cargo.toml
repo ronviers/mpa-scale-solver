@@ -16,12 +16,7 @@ doctest = false  # math formulas in /// comments aren't runnable Rust
 # public field types (axes / extras / refinement / ambiguity_regions),
 # so serde_json is a runtime dep too.
 serde = { version = "1", features = ["derive"] }
-# `float_roundtrip` makes serde_json parse f64 literals to the exact
-# bits Python's `json.loads` produces. Required for session 7's
-# `provenance_hash` bit-identity test (the 4-byte blake2b digest mapped
-# to [0, 1) is rational, so a 1-ULP JSON round-trip drift breaks
-# exact-bit equality). The flag adds ~50 KB to wasm output; acceptable.
-serde_json = { version = "1", features = ["float_roundtrip"] }
+serde_json = "1"
 # provenance::provenance_hash mirrors Python's blake2b-4 fingerprint of
 # (solver_version | operation | dispatch_path | table_version). The
 # blake2b digest is what makes the hash byte-identical across Python and

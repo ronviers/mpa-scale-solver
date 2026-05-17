@@ -82,20 +82,23 @@ pub fn make_provenance(
     }
 }
 
-/// Stable float-encoded hash of a provenance record (handoff §A.5).
+/// Raw 4-byte blake2b digest of a provenance record's hash inputs.
 ///
-/// Used by the EXR channel `provenance_hash` so frame-level dispatch
-/// fingerprints are queryable without unpacking the full provenance
-/// payload. Inputs are `solver_version | operation | dispatch_path | table_version`
-/// (timestamps and notes are excluded so the hash is reproducible across
-/// runs). The result is a 4-byte big-endian blake2b digest mapped onto
-/// `[0, 1)` by dividing the unsigned int by `2^32`.
+/// This is the load-bearing cross-language contract: the digest bytes
+/// must match Python's `hashlib.blake2b(payload, digest_size=4).digest()`
+/// byte-for-byte. The `provenance_hash` float view is derived; the
+/// digest is the authoritative artifact.
 ///
-/// Byte-identity with Python: the four exclusion-and-encoding decisions
-/// — blake2b, 4-byte digest, `'|'` separator, big-endian unsigned int
-/// over `2^32` — must match `mpa_scale_solver/provenance.py` exactly.
-/// See `tests/bit_identity.rs::provenance_hash_python_to_rust_parity`.
-pub fn provenance_hash(prov: &Provenance) -> f64 {
+/// Inputs are `solver_version | operation | dispatch_path | table_version`
+/// (timestamps and notes are excluded so the digest is reproducible
+/// across runs).
+///
+/// Exposed as a separate function so cross-language fixtures can compare
+/// digest bytes directly (via hex) rather than the float view — JSON's
+/// decimal-string float representation is lossy under naive parsers,
+/// and the rational hash leaves no ULP tolerance budget. See
+/// `tests/bit_identity.rs::provenance_hash_python_to_rust_parity`.
+pub fn provenance_digest_bytes(prov: &Provenance) -> [u8; 4] {
     let payload = format!(
         "{}|{}|{}|{}",
         prov.solver_version,
@@ -109,7 +112,22 @@ pub fn provenance_hash(prov: &Provenance) -> f64 {
     hasher
         .finalize_variable(&mut digest)
         .expect("blake2b-32 always finalizes");
-    // Big-endian u32 over 2^32 lands in [0, 1).
+    digest
+}
+
+/// Stable float-encoded hash of a provenance record (handoff §A.5).
+///
+/// Used by the EXR channel `provenance_hash` so frame-level dispatch
+/// fingerprints are queryable without unpacking the full provenance
+/// payload. The 4-byte big-endian digest from `provenance_digest_bytes`
+/// is mapped onto `[0, 1)` by dividing the unsigned int by `2^32`.
+///
+/// For cross-language equality tests, prefer `provenance_digest_bytes`
+/// + hex comparison: JSON cannot round-trip f64 losslessly under naive
+/// parsers, and the rational hash leaves no ULP tolerance budget. The
+/// float view here is the consumer artifact, not the parity artifact.
+pub fn provenance_hash(prov: &Provenance) -> f64 {
+    let digest = provenance_digest_bytes(prov);
     let n = u32::from_be_bytes(digest);
     n as f64 / (1u64 << 32) as f64
 }

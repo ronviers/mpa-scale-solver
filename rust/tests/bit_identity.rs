@@ -25,6 +25,31 @@
 //! Regenerating the fixture: rerun `emit_jax_core_reference.py` and
 //! commit the JSON diff. The test will catch unintended divergence on
 //! the next `cargo test --release`.
+//!
+//! ## Fixture discipline — no bit-exact floats in JSON
+//!
+//! JSON stores floats as decimal strings, which cannot reliably
+//! round-trip IEEE-754 doubles under naive parsers (serde_json's
+//! default lazy parser can drop a ULP on some bit patterns). Two
+//! rules follow:
+//!
+//! 1. **Computed floats** (residuals, drives, gamuts, MAP points,
+//!    posterior moments — anything where the cross-language contract
+//!    is "converges to the same value") use `assert_close` with a
+//!    `LIBM` or `LIBM_WIDE` ULP budget. The budget absorbs both the
+//!    wire-format drift and the libm reduction-order difference.
+//!
+//! 2. **Rational / digest values** (provenance_hash, sidecar keys,
+//!    enum tags, integer counts — anything where the contract is
+//!    "byte-identical") never go through `f64` in the fixture.
+//!    Store the underlying bits as a hex string and compare bytes
+//!    directly. Example: `provenance_digest_bytes` exposes the raw
+//!    4-byte blake2b digest so the fixture stores `output_bits_hex`
+//!    rather than the derived `n / 2^32` float.
+//!
+//! Adding `serde_json/float_roundtrip` to launder the rule is the
+//! wrong direction: it papers over a fixture-design mistake at
+//! ~50 KB wasm cost per consumer.
 
 use std::fs;
 use std::path::PathBuf;
@@ -43,7 +68,7 @@ use mpa_scale_solver::math::{
     tangent_flow_canonical_inverse, tangent_flow_inversion_residual, tangent_flow_substrate,
 };
 use mpa_scale_solver::operations::regime_at_wrapped;
-use mpa_scale_solver::provenance::{make_provenance, provenance_hash, SOLVER_VERSION};
+use mpa_scale_solver::provenance::{make_provenance, provenance_digest_bytes, SOLVER_VERSION};
 use mpa_scale_solver::sidecar::round_key;
 use mpa_scale_solver::types::{
     CanonicalPoint, CanonicalState, CapacityClass, Direction, DispatchPath, Gt, IntentDiagnostics,
@@ -1172,11 +1197,19 @@ fn regime_label_str(label: RegimeLabel) -> &'static str {
     }
 }
 
-/// Cross-language bit-identity for `provenance_hash`. The 4-byte
-/// blake2b digest must match Python's exactly — any drift in the
-/// (solver_version | operation | dispatch_path | table_version)
-/// payload encoding or in the integer-to-`[0, 1)` mapping breaks the
-/// EXR-channel provenance fingerprint contract.
+/// Cross-language bit-identity for `provenance_hash`.
+///
+/// The contract is on the **raw 4-byte blake2b digest**, not the
+/// float view: the digest is bit-stable and serializes losslessly as
+/// hex, while the `n / 2^32` float view cannot round-trip through
+/// JSON's decimal-string representation under naive parsers (1-ULP
+/// drift on some bit patterns; rational hash → no tolerance budget).
+/// Comparing digests sidesteps the wire-format risk entirely.
+///
+/// Any drift in the
+/// `(solver_version | operation | dispatch_path | table_version)`
+/// payload encoding breaks the EXR-channel provenance fingerprint
+/// contract.
 #[test]
 fn provenance_hash_python_to_rust_parity() {
     let fixture = load_fixture();
@@ -1191,19 +1224,21 @@ fn provenance_hash_python_to_rust_parity() {
         let dp_str = inputs["dispatch_path"].as_str().expect("dispatch_path str");
         let dp = parse_dispatch_path(dp_str);
         let tv = inputs["table_version"].as_str().map(|s| s.to_string());
-        let expected = case["output"].as_f64().expect("output f64");
+        let expected_hex = case["output_bits_hex"]
+            .as_str()
+            .expect("output_bits_hex str");
 
-        let prov = make_provenance(op, dp, tv, Vec::new());
-        let actual = provenance_hash(&prov);
+        let prov = make_provenance(op, dp, tv.clone(), Vec::new());
+        let actual_bytes = provenance_digest_bytes(&prov);
+        let actual_hex = actual_bytes
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
 
-        // Bit-identity: equal f64 bits. The hash is rational
-        // (uint / 2^32) so exact equality is the right contract.
         assert_eq!(
-            actual.to_bits(),
-            expected.to_bits(),
+            actual_hex, expected_hex,
             "provenance_hash[{i}] ({op}, {dp_str}, {tv:?}): \
-             expected {expected:.17e}, got {actual:.17e}",
-            tv = inputs["table_version"],
+             digest hex mismatch",
         );
     }
 
@@ -1295,11 +1330,19 @@ fn operation_output_regime_at_python_to_rust_parity() {
         match (out.validation.round_trip_residual, py_rt) {
             (None, v) if v.is_null() => (),
             (Some(actual), v) if v.is_f64() => {
-                let expected_f = v.as_f64().unwrap();
-                assert_eq!(
-                    actual.to_bits(),
-                    expected_f.to_bits(),
-                    "{label}: round_trip_residual",
+                // Tolerance, not bit-equality: `round_trip_residual` is
+                // a computed L2 norm (forward-then-back via the
+                // translation field), so the cross-language contract
+                // is convergence to the same value, not bit-identity.
+                // Going through JSON's decimal-string form drops up to
+                // 1 ULP under naive parsers anyway. LIBM_WIDE absorbs
+                // both the wire-format drift and the libm reduction-
+                // order difference.
+                assert_close(
+                    actual,
+                    v.as_f64().unwrap(),
+                    LIBM_WIDE,
+                    &format!("{label}: round_trip_residual"),
                 );
             }
             other => panic!(

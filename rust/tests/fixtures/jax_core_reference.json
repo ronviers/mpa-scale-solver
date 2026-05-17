@@ -3661,7 +3661,7 @@
         "dispatch_path": "direct_compute",
         "table_version": null
       },
-      "output": 0.4552940079011023
+      "output_bits_hex": "748e25ea"
     },
     {
       "inputs": {
@@ -3669,7 +3669,7 @@
         "dispatch_path": "table_hit",
         "table_version": "banach-1.0.0"
       },
-      "output": 0.012175544397905469
+      "output_bits_hex": "031defbd"
     },
     {
       "inputs": {
@@ -3677,7 +3677,7 @@
         "dispatch_path": "compute_fallback",
         "table_version": "banach-1.0.0"
       },
-      "output": 0.15861811465583742
+      "output_bits_hex": "289b325f"
     },
     {
       "inputs": {
@@ -3685,7 +3685,7 @@
         "dispatch_path": "direct_compute",
         "table_version": null
       },
-      "output": 0.00013786531053483486
+      "output_bits_hex": "000908ff"
     },
     {
       "inputs": {
@@ -3693,7 +3693,7 @@
         "dispatch_path": "table_hit",
         "table_version": "sidecar-v2-A"
       },
-      "output": 0.9602385004982352
+      "output_bits_hex": "f5d230bc"
     },
     {
       "inputs": {
@@ -3701,7 +3701,7 @@
         "dispatch_path": "direct_compute",
         "table_version": null
       },
-      "output": 0.9200318318326026
+      "output_bits_hex": "eb8734c5"
     },
     {
       "inputs": {
@@ -3709,7 +3709,7 @@
         "dispatch_path": "direct_compute",
         "table_version": null
       },
-      "output": 0.8480549629312009
+      "output_bits_hex": "d91a214b"
     },
     {
       "inputs": {
@@ -3717,7 +3717,7 @@
         "dispatch_path": "direct_compute",
         "table_version": null
       },
-      "output": 0.8017631736584008
+      "output_bits_hex": "cd4059f2"
     },
     {
       "inputs": {
@@ -3725,7 +3725,7 @@
         "dispatch_path": "direct_compute",
         "table_version": null
       },
-      "output": 0.6368475770577788
+      "output_bits_hex": "a308715c"
     },
     {
       "inputs": {
@@ -3733,7 +3733,7 @@
         "dispatch_path": "direct_compute",
         "table_version": null
       },
-      "output": 0.6893949494697154
+      "output_bits_hex": "b07c2ffa"
     },
     {
       "inputs": {
@@ -3741,7 +3741,7 @@
         "dispatch_path": "direct_compute",
         "table_version": null
       },
-      "output": 0.7280079305637628
+      "output_bits_hex": "ba5eba4d"
     },
     {
       "inputs": {
@@ -3749,7 +3749,7 @@
         "dispatch_path": "table_hit",
         "table_version": "banach-2.0.0"
       },
-      "output": 0.07294871914200485
+      "output_bits_hex": "12acc46b"
     }
   ],
   "operation_output_regime_at": [

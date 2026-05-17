@@ -378,19 +378,25 @@ mpa-conform's `import mpa_scale_solver` keeps working unchanged.
   process-local, never bit-identity-compared. **Two new
   bit-identity fixtures:** (1) `provenance_hash` (12 cases covering
   every `DispatchPath` variant + null vs non-null `table_version`)
-  — exact-bit f64 equality on the rational `n / 2^32` hash;
-  required enabling `serde_json/float_roundtrip` because the
-  default lazy float parser was 1 ULP off Python on one of the 12
-  hashes (rational hash → no tolerance budget available).
-  (2) `operation_output_regime_at` (4 cases) — the representative
-  wrapped-variant wire parity for `OperationOutput<RegimeReading>`;
-  timestamps + note strings excluded by documented asymmetric
-  design (timestamps non-deterministic; notes have a Python/Rust
-  float-format divergence — `f"{0.0}"` is `"0.0"` in Python,
-  `format!("{}", 0.0)` is `"0"` in Rust). New deps: `blake2 =
-  "0.10"` (default-features off) for `provenance_hash`'s
-  `blake2b-32` digest, and `serde_json` gains the `float_roundtrip`
-  feature (~50 KB to wasm output). The thin-discipline decision on
+  — stores the **raw 4-byte blake2b digest as hex** and Rust
+  compares digest bytes directly via the new public
+  `provenance::provenance_digest_bytes`. The initial commit stored
+  the float view + compared bits, which forced enabling
+  `serde_json/float_roundtrip` to fight a 1-ULP JSON drift; that
+  workaround was retired the same session in favor of the cleaner
+  digest-hex contract — the float-in-JSON form was the wrong shape
+  for a rational hash. See the new "fixture discipline" Open/watch
+  entry. (2) `operation_output_regime_at` (4 cases) — the
+  representative wrapped-variant wire parity for
+  `OperationOutput<RegimeReading>`; timestamps + note strings
+  excluded by documented asymmetric design (timestamps
+  non-deterministic; notes have a Python/Rust float-format
+  divergence — `f"{0.0}"` is `"0.0"` in Python,
+  `format!("{}", 0.0)` is `"0"` in Rust). `round_trip_residual`
+  comparison uses `LIBM_WIDE` ULP tolerance (preemptive — the slot
+  is `None` for regime_at but session 8's posterior parity will
+  populate it). New dep: `blake2 = "0.10"` (default-features off)
+  for `provenance_hash`'s `blake2b-32` digest. The thin-discipline decision on
   `make_provenance` was explicit args (no kwargs / no builder) to
   match the existing `operations.rs` style — Rust callers pass
   `make_provenance("regime_at", DispatchPath::DirectCompute, None, vec![])`
@@ -562,13 +568,30 @@ capability lands in v5 first via a v5.x release.
   - ~~`provenance_hash` bit-identity~~ — landed session 7 via the
     `provenance_hash` fixture (12 cases covering every `DispatchPath`
     variant + null vs non-null `table_version`) and the
-    `provenance_hash_python_to_rust_parity` test in
-    `bit_identity.rs`. Required `serde_json`'s `float_roundtrip`
-    feature flag — default serde_json's lazy float parser was 1 ULP
-    off Python's `json.loads` on one of the 12 hashes, and
-    `provenance_hash`'s rational `n / 2^32` value demands exact-bit
-    equality; the flag adds ~50 KB to wasm output and is documented
-    in `Cargo.toml`.
+    `provenance_hash_python_to_rust_parity` test in `bit_identity.rs`.
+    The fixture stores the **raw 4-byte blake2b digest as hex** (not
+    the rational float view) and Rust compares digest bytes directly
+    via the new public `provenance::provenance_digest_bytes`. The
+    earlier session-7 commit briefly enabled `serde_json/float_roundtrip`
+    to launder a 1-ULP JSON drift; that workaround was retired in the
+    same session — the float-in-JSON form was the wrong contract for
+    a rational hash. See the **fixture discipline** note below.
+- **Fixture discipline — no bit-exact floats in JSON.** Surfaced
+  during the session-7 retro on `float_roundtrip`. JSON stores floats
+  as decimal strings; round-tripping IEEE-754 doubles is brittle
+  under naive parsers. Two rules:
+  1. Computed floats (residuals, drives, gamut bounds, MAP points,
+     posterior moments) use `assert_close` with `LIBM`/`LIBM_WIDE`
+     ULP budgets. The budget absorbs both wire-format drift and the
+     libm reduction-order difference.
+  2. Rational / digest values (provenance_hash, sidecar keys, integer
+     counts) never go through `f64` in the fixture. Store the
+     underlying bits as a hex string and compare bytes directly.
+  Adding `serde_json/float_roundtrip` is the wrong direction — it
+  papers over a fixture-design mistake at ~50 KB wasm cost. Future
+  cross-language parity tests (session 8 `Posterior`, eventual
+  `InverseLookupSidecar` parity) MUST follow these rules. The full
+  rule lives in the `bit_identity.rs` module docstring.
 - **`operations.py` deferred-session split.** Session 4 landed the
   raw forward path (`apply_translation` + three dispatch helpers,
   `forward_sweep_invert_grid`, `tau_obs_sweep_grid`, `regime_at`,
@@ -600,31 +623,74 @@ capability lands in v5 first via a v5.x release.
     `gamut_classify_wrapped`, `intent_map_wrapped`,
     `intent_compose_wrapped`, `validate_driver_profile_wrapped`)
     plus raw `validate_driver_profile`. Two parity-fixture
-    additions (provenance_hash, operation_output_regime_at — see
-    the per-fixture entries above). `blake2` + `serde_json/float_roundtrip`
-    added as deps; `SOLVER_VERSION = "5.0.0"` const tracks Python's
-    `__version__` (deliberate decoupling from the Cargo crate version).
+    additions (provenance_hash via digest-hex storage,
+    operation_output_regime_at via structured-fields + ULP-tolerance
+    on residuals — see the per-fixture entries above). Single new
+    dep: `blake2 = "0.10"` (default-features off).
+    `SOLVER_VERSION = "5.0.0"` const tracks Python's `__version__`
+    (deliberate decoupling from the Cargo crate version).
   - *Session 8 — posterior.* `forward_sweep_invert_posterior` +
     `_wrapped`. Depends on the Laplace primitives already in
     `math.rs`; the wrapper builds a `Posterior` from a posterior
     covariance + MAP point. The session-7-proven wrapped-variant
     pattern (raw + `*_wrapped` stamping `OperationOutput<T>` +
-    `make_provenance` + dedicated `report_for_*` builder) is the
-    template — the posterior wrapper just substitutes
-    `report_for_forward_sweep_invert` (or a new
-    `report_for_posterior` if MAP-point asymptotic-flagging plus
-    singular-covariance detection wants its own builder; session-7
-    sketched the former). One new bit-identity fixture
-    (`operation_output_posterior` mirroring the session-7
-    `operation_output_regime_at` shape) extends the wrapped-variant
-    wire-parity coverage.
+    `make_provenance` + reusing `report_for_forward_sweep_invert`
+    for the MAP point) is the template; Python reuses that report
+    builder verbatim (operations.py line 1662), so no new
+    `report_for_posterior` is needed at the v5 surface.
+    **Session-7 audit found one missing primitive:**
+    `jax_ops.tangent_flow_forward_jacobian` does not have a Rust
+    counterpart — Python uses `jax.jacfwd` over
+    `tangent_flow_substrate`; Rust must port the analytical 2x2
+    form. The Jacobian is diagonal:
+    `[[1, 0], [0, (tau_obs/tau_obs_ref)^delta_gamma]]` for the
+    non-degenerate path and `[[1, 0], [0, 1]]` (identity) at the
+    degenerate `tau_obs <= 0` branch — ~10 LOC in `math.rs`. All
+    other primitives needed by `tangent_flow_posterior`
+    (`tangent_flow_canonical_inverse`, `laplace_covariance_from_jacobian`,
+    `slogdet_2x2`) and `lookup_table_posterior`
+    (`forward_sweep_invert` with `return_residuals=true`, libm
+    `exp`, sort) are already in place. **Fixture-discipline rule
+    applies to the new `operation_output_posterior` parity test:**
+    `Posterior.mean` (`CanonicalState`), `covariance` (`[[f64; 2]; 2]`),
+    `noise_variance`, `log_evidence` — all *computed* floats →
+    `LIBM_WIDE` ULP tolerance, never bit-exact JSON storage.
+    Sole non-trivial dispatch question deferred to session-8-time:
+    `lookup_table_posterior`'s `k == 1` degenerate path (delta
+    posterior with noise-floor covariance) needs explicit handling.
+    One new bit-identity fixture (`operation_output_posterior`
+    mirroring `operation_output_regime_at`) extends the
+    wrapped-variant wire-parity coverage.
   - *Session 9 — bindings.* `pyo3` + `wasm-bindgen`. This is the
     one that makes v6 actually shippable — mpa-conform's
     `import mpa_scale_solver` keeps working unchanged; mpa-auditor
     gains a browser-side native solver. Per-op `__call__` shims and
     typed PyO3 conversions for the eight wrapped variants land here
     (validation + provenance ride along automatically — they're
-    already `Serialize + Deserialize`).
+    already `Serialize + Deserialize`). **Session-7 prerequisites
+    audit:** pyo3 build prerequisites verified on this Windows
+    machine — `C:\Program Files\Python312\libs\python312.lib` +
+    `python312.dll` + `Include\Python.h` all present, so the
+    `PYO3_PYTHON` auto-detection path will work without GUI
+    installer intervention. `wasm32-unknown-unknown` target was
+    bootstrapped at session 1; only `wasm-pack` / `wasm-bindgen-cli`
+    (`cargo install wasm-pack`) needs to land at session-9 time.
+    **Two open design questions to settle at session-9 time:**
+    (1) `OperationOutput<T>` is generic — pyo3 cannot expose
+    parameterized Rust types directly. Choose between per-`T`
+    concrete wrappers (`PyOperationOutputSubstrateState`,
+    `PyOperationOutputCanonicalState`, ...) or a dict-shaped Python
+    view (`{value: ..., validation: {...}, provenance: {...}}` via
+    serde_json). The dict-shape is thinner and matches Python's
+    existing `dataclasses.asdict` consumer surface — leaning
+    toward it. (2) `InverseLookupSidecar` wire format is currently
+    undefined: this crate consumes whatever mpa-conform's curator
+    path emits, but the producer side has not landed in mpa-conform
+    yet. The Rust `SidecarKey`'s `':'`-joined-bits string form is a
+    placeholder that will need to either match the future Python
+    emitter or trigger a Python-side renormalize. **Not blocking
+    for session 9** (no sidecar JSON I/O ports at session 9), but
+    flag for the mpa-conform curator session.
   The session-2 fixture lesson (specify `(candidate, target)`
   pairs explicitly; never generate `target` from one impl and
   test the other) was load-bearing again in session 4: see the
