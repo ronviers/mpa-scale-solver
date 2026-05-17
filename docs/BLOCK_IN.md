@@ -436,8 +436,53 @@ capability lands in v5 first via a v5.x release.
   - *Session 6 — intent algebra.* `intent_map` + `intent_compose`
     + the five `_intent_iN` handlers + the helpers
     (`_clamp_to_gamut`, `_nearest_in_gamut_chit_for_regime`,
-    `_capacity_class`, `_sign_preserving_clamp`). Surfaces typed
-    sacrifice-dict structs rather than `dict[str, Any]`.
+    `_capacity_class`, `_sign_preserving_clamp`). **Sacrifice-record
+    shape decided 2026-05-16** — common struct + flattened typed-enum
+    diagnostics (sanctioned at session-5-handoff time after looking
+    at the Python handler shapes):
+    ```rust
+    pub struct SacrificeRecord {
+        pub invariant_preserved: bool,
+        pub delta_chit: f64,
+        pub delta_gamma_AB: f64,
+        #[serde(flatten)]
+        pub diagnostics: IntentDiagnostics,
+    }
+    #[serde(tag = "intent")]
+    pub enum IntentDiagnostics {
+        I1 { regime_preserved, gamma_AB_sign_preserved, k_frust_preserved,
+             original_regime, mapped_regime,
+             original_gamma_AB_sign, mapped_gamma_AB_sign },
+        I2 { out_of_gamut_rejected, out_of_gamut_axes: Vec<String> },
+        I3 { capacity_class, mapped_capacity_class, k_frust, k_frust_preserved },
+        I4 { original_gamma_AB_sign, mapped_gamma_AB_sign },
+        I5 { regime_preserved, original_regime, mapped_regime },
+    }
+    impl SacrificeRecord {
+        pub fn intent(&self) -> IntentId { /* match diagnostics */ }
+        pub fn preserved_invariant(&self) -> &'static str {
+            /* per-variant static string from Python handlers */
+        }
+    }
+    ```
+    The three truly-common fields (`invariant_preserved`, `delta_chit`,
+    `delta_gamma_AB`) live on the outer struct; intent-specific
+    fields are typed per-variant; `intent` and `preserved_invariant`
+    strings are derived (not stored) since they're statically
+    determined by which handler emitted the record. `#[serde(flatten)]`
+    + `#[serde(tag = "intent")]` makes the JSON wire format a flat
+    dict matching Python's `sac` output shape (modulo the derived
+    `preserved_invariant` string — add via custom serializer if
+    cross-language JSON parity at session 7's wrapped-variant
+    boundary demands it; otherwise leave as a Rust-side method).
+    `IntentId` enum + `CapacityClass` enum (`Deep` / `Shallow`)
+    land in this session as new public types in `types.rs`. New
+    `OperationError::I2InComposition` for `intent_compose`'s RFC-S
+    §3 rule (I2 doesn't compose with other intents). No new
+    bit-identity fixtures expected — pure arithmetic, no math
+    primitives added. Tests port from `tests/test_intents.py`
+    (28 Python tests — likely 20-25 Rust equivalents since
+    Python-specific shape tests don't translate).
   - *Session 7 — validation + provenance + wrapped variants.*
     Ports `validation.py` (492 LOC) and `provenance.py` (60 LOC),
     then the eight `*_wrapped` operations stamping
