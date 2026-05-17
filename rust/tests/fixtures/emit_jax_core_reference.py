@@ -1,16 +1,19 @@
-"""Emit the bit-identity reference fixture for the Rust math.rs port.
+"""Emit the bit-identity reference fixture for the Rust port.
 
-Runs the Python `mpa_scale_solver.jax_core` primitives over a small input
-sweep and writes the input + output pairs to `jax_core_reference.json`
-next to this file. The Rust integration test at
-`rust/tests/bit_identity.rs` consumes that fixture and asserts each
-Rust primitive in `src/math.rs` reproduces the Python output within a
-per-primitive ULP budget (BLOCK_IN §v6 "byte-identical for deterministic
-ops" check, scoped to math.rs).
+Runs the Python `mpa_scale_solver` primitives over a small input sweep
+and writes input + output pairs to `jax_core_reference.json` next to
+this file. The Rust integration test at `rust/tests/bit_identity.rs`
+consumes that fixture and asserts each Rust primitive reproduces the
+Python output within a per-primitive ULP budget (BLOCK_IN §v6
+"byte-identical for deterministic ops" check).
 
-Regeneration discipline: the fixture is committed. If `jax_core` math
-changes, rerun this script and commit the JSON diff in the same change.
-The Rust test will catch unintentional divergence.
+Module coverage:
+  * `jax_core` (math.rs) — 12 primitives, session 2.
+  * `gfdr_model` (gfdr_model.rs) + `sidecar` + `flow` — session 4.
+
+Regeneration discipline: the fixture is committed. If any source
+function changes, rerun this script and commit the JSON diff in the
+same change. The Rust test will catch unintentional divergence.
 
 Run with the repo's Python (any cwd is fine — the package is editable-
 installed; if not, `pip install -e H:/mpa-scale-solver` once):
@@ -25,7 +28,17 @@ from pathlib import Path
 
 import jax.numpy as jnp
 
-from mpa_scale_solver import jax_core
+from mpa_scale_solver import jax_core, gfdr_model
+from mpa_scale_solver.flow import flow as flow_op
+from mpa_scale_solver.sidecar import round_key as sidecar_round_key
+from mpa_scale_solver.types import (
+    CanonicalPoint,
+    CanonicalState,
+    OperatingPoint,
+    ScalingRule,
+    TangentFlowField,
+    TranslationRule,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +464,246 @@ def cases_laplace_log_evidence() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Session 4 — gfdr_model.py primitives
+# ---------------------------------------------------------------------------
+
+
+def cases_gfdr_alpha_s() -> list[dict]:
+    sweep = [-1.5, -0.7, -0.3, -0.05, 0.0, 0.05, 0.3, 0.7, 1.5]
+    return [
+        {"inputs": {"chit": c}, "outputs": {"alpha_s": gfdr_model.alpha_s(c)}}
+        for c in sweep
+    ]
+
+
+def cases_gfdr_plateau_height() -> list[dict]:
+    sweep = [-2.0, -0.5, -0.2, 0.0, 0.2, 0.5, 1.5]
+    return [
+        {"inputs": {"chit": c},
+         "outputs": {"plateau_height": gfdr_model.plateau_height(c)}}
+        for c in sweep
+    ]
+
+
+def cases_gfdr_vertex_regime() -> list[dict]:
+    # String-equality test (no ULP budget needed). Hits each branch.
+    sweep = [-1.2, -0.7, -0.5, -0.2, 0.0, 0.2, 0.5, 0.7, 1.0]
+    return [
+        {"inputs": {"chit": c},
+         "outputs": {"regime": gfdr_model.vertex_regime(c)}}
+        for c in sweep
+    ]
+
+
+def cases_gfdr_generate_locus() -> list[dict]:
+    # One chit per regime — covers all four locus branches. The full
+    # 80-point locus is captured per case; that's the bulk of the new
+    # fixture, but each point is small.
+    sweep_chits = [1.0, 0.4, 0.0, -0.4, -1.0]
+    out: list[dict] = []
+    for c in sweep_chits:
+        regime = gfdr_model.vertex_regime(c)
+        locus = gfdr_model.generate_locus(c, regime)
+        out.append({
+            "inputs": {"chit": c, "regime": regime},
+            "outputs": {
+                "tau": [p["tau"] for p in locus],
+                "chi": [p["chi"] for p in locus],
+                "C": [p["C"] for p in locus],
+            },
+        })
+    return out
+
+
+def cases_gfdr_interp_locus() -> list[dict]:
+    # Use one canonical locus and query at sub-grid taus including the
+    # endpoint-clamp cases.
+    base_chit = 0.0
+    locus = gfdr_model.generate_locus(base_chit, gfdr_model.vertex_regime(base_chit))
+    tau_queries = [0.001, 0.01, 0.1, 1.0, 10.0, 500.0, 1000.0, 5000.0]
+    out: list[dict] = []
+    for tau in tau_queries:
+        r = gfdr_model.interp_locus(locus, tau)
+        out.append({
+            "inputs": {"chit": base_chit, "tau": tau},
+            "outputs": {"C": r["C"], "chi": r["chi"]},
+        })
+    return out
+
+
+def cases_gfdr_locus_residual() -> list[dict]:
+    # Per session 2 lesson: do NOT seed `empirical` from
+    # `gfdr_model.generate_locus(candidate)` — that creates a
+    # self-residual that Python computes as exact 0 but Rust as ~1e-33
+    # due to cross-impl libm cancellation. Synthetic invented rows
+    # produce non-trivial residuals on both sides → no cancellation
+    # collision, ULP tolerance covers the rest.
+    empirical = [
+        {"tau": 0.1, "C": 0.9, "chi": 0.05},
+        {"tau": 1.0, "C": 0.7, "chi": 0.2},
+        {"tau": 10.0, "C": 0.4, "chi": 0.5},
+        {"tau": 100.0, "C": 0.2, "chi": 0.7},
+        {"tau": 500.0, "C": 0.1, "chi": 0.8},
+    ]
+    candidate_chits = [-1.0, -0.5, -0.1, 0.0, 0.3, 0.5, 1.0]
+    out: list[dict] = []
+    for c in candidate_chits:
+        out.append({
+            "inputs": {"empirical": empirical, "candidate_chit": c},
+            "outputs": {"residual": gfdr_model.locus_residual(empirical, c)},
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Session 4 — sidecar.round_key (cross-language rounding sanity)
+# ---------------------------------------------------------------------------
+
+
+def cases_sidecar_round_key() -> list[dict]:
+    # Mostly bulk-of-input cases where Python's banker's rounding and
+    # Rust's `(x * 10^n).round_ties_even() / 10^n` agree. Includes a
+    # mid-range halfway case where divergence could surface — the test
+    # tolerates the documented cross-impl rounding caveat (1 ULP at the
+    # rounded precision).
+    # Infinity-key cases are excluded — `Infinity` is not valid JSON
+    # (CPython emits the token by default; serde_json refuses to parse
+    # it). Round-trip non-finite handling is covered by the Rust unit
+    # test `sidecar::tests::round_decimal_passes_non_finite_through`.
+    # Halfway-at-decimal-N cases where the input is not exactly
+    # representable in f64 (e.g. 2.345_5 at decimals=3) are excluded:
+    # Python's banker-rounding via dtoa and Rust's
+    # `(x * 10^n).round_ties_even() / 10^n` disagree once the binary
+    # multiplication shifts the value off the exact halfway. The
+    # divergence is documented in `sidecar.rs`; the cases here are
+    # exactly-representable (0.125, 0.375, ...) or far from any
+    # halfway, where both impls agree bit-for-bit.
+    sweep = [
+        ((1.234_567_891_234, -2.345_678_912_345, 10.123_456_789), 6),
+        ((0.0, 0.0, 0.0), 6),
+        ((1e-9, -1e-9, 1.5e-9), 6),     # rounds to 0
+        ((1.5, 2.5, -1.5), 0),          # banker's: 2, 2, -2
+        ((0.125, 0.375, 0.625), 2),     # exactly representable halfways
+    ]
+    out: list[dict] = []
+    for key, decimals in sweep:
+        rounded = sidecar_round_key(key, decimals)
+        out.append({
+            "inputs": {
+                "chit": key[0], "gamma_AB": key[1], "tau_obs": key[2],
+                "decimals": decimals,
+            },
+            "outputs": {
+                "chit": rounded[0],
+                "gamma_AB": rounded[1],
+                "tau_obs": rounded[2],
+            },
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Session 4 — flow() dispatch (banach_exponential / generic / Caputo)
+# ---------------------------------------------------------------------------
+
+
+def _make_tangent_flow_field(
+    delta_chit: float,
+    delta_gamma: float,
+    tau_obs_ref: float,
+    refinement: dict | None,
+) -> TangentFlowField:
+    origin = TranslationRule(
+        operating_point=OperatingPoint(label="origin", gt="s", axes={}),
+        xdot_choice="default",
+        canonical=CanonicalPoint(
+            chit=0.0, gamma_AB=0.0, k_frust=False, method="test", extras={},
+        ),
+    )
+    return TangentFlowField(
+        direction="forward",
+        shape="tangent_flow",
+        rule_at_origin=origin,
+        scaling=ScalingRule(
+            tau_obs_ref=tau_obs_ref,
+            delta_chit=delta_chit,
+            delta_gamma=delta_gamma,
+            refinement=refinement,
+        ),
+    )
+
+
+def cases_flow() -> list[dict]:
+    """flow() across all three TangentFlowField dispatch branches.
+
+    Each case carries the full field-construction inputs so Rust can
+    rebuild an identical `TangentFlowField` and run `flow::flow()`.
+    """
+    cases_in: list[dict] = [
+        # Generic tangent-flow (no refinement, no banach_exponential):
+        # routes through `tangent_flow_canonical`.
+        {
+            "delta_chit": 0.3, "delta_gamma": 0.5,
+            "tau_obs_ref": 1.0, "refinement": None,
+            "chit_0": 1.5, "gamma_AB_0": 2.5, "nu": 2.0,
+        },
+        # Generic at nu=tau_ref: identity in math (log(1)=0, 1^x=1).
+        {
+            "delta_chit": 0.3, "delta_gamma": 0.5,
+            "tau_obs_ref": 1.0, "refinement": None,
+            "chit_0": 1.5, "gamma_AB_0": 2.5, "nu": 1.0,
+        },
+        # Banach exponential branch.
+        {
+            "delta_chit": 0.0, "delta_gamma": 0.0,
+            "tau_obs_ref": 1.0,
+            "refinement": {
+                "flow_kind": "banach_exponential",
+                "lambda_chit": 0.3, "lambda_gamma": 0.4,
+            },
+            "chit_0": 2.0, "gamma_AB_0": 3.0, "nu": 1.5,
+        },
+        # Caputo branch (beta_mem < 1) with multi-term prony.
+        {
+            "delta_chit": 0.0, "delta_gamma": 0.0,
+            "tau_obs_ref": 1.0,
+            "refinement": {
+                "beta_mem": 0.7,
+                "lambda_chit": 0.3, "lambda_gamma": 0.4,
+                "prony_terms": [[0.4, 1.0], [0.6, 2.5]],
+            },
+            "chit_0": 1.0, "gamma_AB_0": 1.0, "nu": 1.5,
+        },
+        # Caputo single-term reduces to Banach exp (sanity case).
+        {
+            "delta_chit": 0.0, "delta_gamma": 0.0,
+            "tau_obs_ref": 1.0,
+            "refinement": {
+                "beta_mem": 0.999,
+                "lambda_chit": 0.3, "lambda_gamma": 0.4,
+                "prony_terms": [[1.0, 1.0]],
+            },
+            "chit_0": 1.5, "gamma_AB_0": 2.5, "nu": 1.0,
+        },
+    ]
+    out: list[dict] = []
+    for case in cases_in:
+        field = _make_tangent_flow_field(
+            case["delta_chit"], case["delta_gamma"],
+            case["tau_obs_ref"], case["refinement"],
+        )
+        initial = CanonicalState(
+            chit=case["chit_0"], gamma_AB=case["gamma_AB_0"], k_frust=False,
+        )
+        result = flow_op(initial, case["nu"], field)
+        out.append({
+            "inputs": case,
+            "outputs": {"chit": result.chit, "gamma_AB": result.gamma_AB},
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -468,6 +721,15 @@ PRIMITIVES = {
     "mlp_forward": cases_mlp_forward,
     "learned_field_substrate": cases_learned_field_substrate,
     "laplace_log_evidence": cases_laplace_log_evidence,
+    # session 4 — gfdr_model.rs + sidecar.rs + flow.rs
+    "gfdr_alpha_s": cases_gfdr_alpha_s,
+    "gfdr_plateau_height": cases_gfdr_plateau_height,
+    "gfdr_vertex_regime": cases_gfdr_vertex_regime,
+    "gfdr_generate_locus": cases_gfdr_generate_locus,
+    "gfdr_interp_locus": cases_gfdr_interp_locus,
+    "gfdr_locus_residual": cases_gfdr_locus_residual,
+    "sidecar_round_key": cases_sidecar_round_key,
+    "flow": cases_flow,
 }
 
 

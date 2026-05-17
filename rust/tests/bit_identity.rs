@@ -29,11 +29,23 @@
 use std::fs;
 use std::path::PathBuf;
 
+use std::collections::BTreeMap;
+
+use mpa_scale_solver::flow::flow;
+use mpa_scale_solver::gfdr_model::{
+    EmpiricalRow, alpha_s, generate_locus, interp_locus, locus_residual, plateau_height,
+    vertex_regime,
+};
 use mpa_scale_solver::math::{
     Activation, MlpLayer, banach_state, caputo_flow, laplace_covariance_from_hessian,
     laplace_covariance_from_jacobian, laplace_log_evidence, learned_field_substrate,
     lookup_squared_distance, mlp_forward, tangent_flow_canonical,
     tangent_flow_canonical_inverse, tangent_flow_inversion_residual, tangent_flow_substrate,
+};
+use mpa_scale_solver::sidecar::round_key;
+use mpa_scale_solver::types::{
+    CanonicalPoint, CanonicalState, Direction, Gt, OperatingPoint, RegimeLabel, ScalingRule,
+    TangentFlowField, TranslationField, TranslationRule,
 };
 use serde_json::Value;
 
@@ -124,10 +136,11 @@ fn assert_close(actual: f64, expected: f64, tol_ulps: u64, label: &str) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn fixture_covers_all_12_primitives() {
+fn fixture_covers_all_expected_primitives() {
     let fixture = load_fixture();
     let obj = fixture.as_object().expect("top-level object");
     let expected = [
+        // session 2 — jax_core.py → math.rs (12 primitives)
         "tangent_flow_substrate",
         "banach_state",
         "tangent_flow_canonical",
@@ -140,6 +153,17 @@ fn fixture_covers_all_12_primitives() {
         "mlp_forward",
         "learned_field_substrate",
         "laplace_log_evidence",
+        // session 4 — gfdr_model.py → gfdr_model.rs (6)
+        "gfdr_alpha_s",
+        "gfdr_plateau_height",
+        "gfdr_vertex_regime",
+        "gfdr_generate_locus",
+        "gfdr_interp_locus",
+        "gfdr_locus_residual",
+        // session 4 — sidecar.py → sidecar.rs (1)
+        "sidecar_round_key",
+        // session 4 — flow.py → flow.rs (1)
+        "flow",
     ];
     assert_eq!(
         obj.len(),
@@ -532,6 +556,288 @@ fn jax_core_laplace_log_evidence() {
             f(&exp["log_evidence"]),
             LIBM_WIDE,
             &format!("laplace_log_evidence[{i}]"),
+        );
+    }
+}
+
+// ===========================================================================
+// Session 4 — gfdr_model.rs primitives
+// ===========================================================================
+
+#[test]
+fn gfdr_alpha_s_matches_python() {
+    let fixture = load_fixture();
+    for (i, case) in fixture["gfdr_alpha_s"].as_array().unwrap().iter().enumerate() {
+        let chit = f(&case["inputs"]["chit"]);
+        let expected = f(&case["outputs"]["alpha_s"]);
+        assert_close(alpha_s(chit), expected, LIBM, &format!("alpha_s[{i}]"));
+    }
+}
+
+#[test]
+fn gfdr_plateau_height_matches_python() {
+    let fixture = load_fixture();
+    for (i, case) in fixture["gfdr_plateau_height"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        let chit = f(&case["inputs"]["chit"]);
+        let expected = f(&case["outputs"]["plateau_height"]);
+        assert_close(
+            plateau_height(chit),
+            expected,
+            LIBM,
+            &format!("plateau_height[{i}]"),
+        );
+    }
+}
+
+#[test]
+fn gfdr_vertex_regime_matches_python() {
+    // String-equality test — no ULP budget needed.
+    let fixture = load_fixture();
+    for (i, case) in fixture["gfdr_vertex_regime"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        let chit = f(&case["inputs"]["chit"]);
+        // Python emits the regime as its `Literal` string; serde reads
+        // it back into our enum via `rename_all = "snake_case"`.
+        let want: RegimeLabel = serde_json::from_value(case["outputs"]["regime"].clone())
+            .expect("regime string parses to enum");
+        assert_eq!(
+            vertex_regime(chit),
+            want,
+            "vertex_regime[{i}] chit={chit}"
+        );
+    }
+}
+
+#[test]
+fn gfdr_generate_locus_matches_python() {
+    let fixture = load_fixture();
+    for (i, case) in fixture["gfdr_generate_locus"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        let chit = f(&case["inputs"]["chit"]);
+        let regime: RegimeLabel = serde_json::from_value(case["inputs"]["regime"].clone())
+            .expect("regime parses");
+        let locus = generate_locus(chit, regime);
+        let want_tau = vec_f(&case["outputs"]["tau"]);
+        let want_chi = vec_f(&case["outputs"]["chi"]);
+        let want_c = vec_f(&case["outputs"]["C"]);
+        assert_eq!(locus.len(), want_tau.len(), "generate_locus[{i}] length");
+        for (k, p) in locus.iter().enumerate() {
+            // `tau` is `tau_min * (tau_max/tau_min)^t` — same arithmetic
+            // either side; LIBM budget covers libm-powf.
+            assert_close(
+                p.tau,
+                want_tau[k],
+                LIBM,
+                &format!("generate_locus[{i}][{k}].tau"),
+            );
+            // `chi` and `C` compose exp / powf calls; the s-critical
+            // branch sums two contributions → LIBM_WIDE.
+            assert_close(
+                p.chi,
+                want_chi[k],
+                LIBM_WIDE,
+                &format!("generate_locus[{i}][{k}].chi"),
+            );
+            assert_close(
+                p.c,
+                want_c[k],
+                LIBM_WIDE,
+                &format!("generate_locus[{i}][{k}].C"),
+            );
+        }
+    }
+}
+
+#[test]
+fn gfdr_interp_locus_matches_python() {
+    let fixture = load_fixture();
+    for (i, case) in fixture["gfdr_interp_locus"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        let chit = f(&case["inputs"]["chit"]);
+        let tau = f(&case["inputs"]["tau"]);
+        let regime = vertex_regime(chit);
+        let locus = generate_locus(chit, regime);
+        let (c, chi) = interp_locus(&locus, tau);
+        assert_close(
+            c,
+            f(&case["outputs"]["C"]),
+            LIBM,
+            &format!("interp_locus[{i}].C"),
+        );
+        assert_close(
+            chi,
+            f(&case["outputs"]["chi"]),
+            LIBM,
+            &format!("interp_locus[{i}].chi"),
+        );
+    }
+}
+
+#[test]
+fn gfdr_locus_residual_matches_python() {
+    let fixture = load_fixture();
+    for (i, case) in fixture["gfdr_locus_residual"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        let candidate = f(&case["inputs"]["candidate_chit"]);
+        let rows: Vec<EmpiricalRow> = case["inputs"]["empirical"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| EmpiricalRow {
+                tau: f(&row["tau"]),
+                chi: f(&row["chi"]),
+                c: f(&row["C"]),
+            })
+            .collect();
+        let r = locus_residual(&rows, candidate);
+        // Five-term mean of squared diffs of `(C, chi)` against
+        // interpolated locus values; cumulative reduction order matters.
+        assert_close(
+            r,
+            f(&case["outputs"]["residual"]),
+            LIBM_WIDE,
+            &format!("locus_residual[{i}]"),
+        );
+    }
+}
+
+// ===========================================================================
+// Session 4 — sidecar.rs cross-language rounding
+// ===========================================================================
+
+#[test]
+fn sidecar_round_key_matches_python() {
+    let fixture = load_fixture();
+    for (i, case) in fixture["sidecar_round_key"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        let chit = f(&case["inputs"]["chit"]);
+        let gamma = f(&case["inputs"]["gamma_AB"]);
+        let tau = f(&case["inputs"]["tau_obs"]);
+        let decimals = case["inputs"]["decimals"].as_i64().unwrap() as i32;
+        let (r_chit, r_gamma, r_tau) = round_key(chit, gamma, tau, decimals);
+        // Python `round` and Rust `round_ties_even` can disagree by 1 ULP
+        // at the rounded precision in pathological halfway cases; LIBM=4
+        // covers everything the typical Banach-sidecar producer emits.
+        assert_close(
+            r_chit,
+            f(&case["outputs"]["chit"]),
+            LIBM,
+            &format!("round_key[{i}].chit"),
+        );
+        assert_close(
+            r_gamma,
+            f(&case["outputs"]["gamma_AB"]),
+            LIBM,
+            &format!("round_key[{i}].gamma_AB"),
+        );
+        assert_close(
+            r_tau,
+            f(&case["outputs"]["tau_obs"]),
+            LIBM,
+            &format!("round_key[{i}].tau_obs"),
+        );
+    }
+}
+
+// ===========================================================================
+// Session 4 — flow.rs dispatch (banach_exp / generic / Caputo)
+// ===========================================================================
+
+fn build_tangent_flow_field(inputs: &Value) -> TangentFlowField {
+    let refinement: Option<BTreeMap<String, Value>> = match &inputs["refinement"] {
+        Value::Null => None,
+        Value::Object(map) => Some(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+        other => panic!("unexpected refinement shape: {other:?}"),
+    };
+    let origin = TranslationRule {
+        operating_point: OperatingPoint {
+            label: "origin".to_string(),
+            gt: Gt::S,
+            axes: BTreeMap::new(),
+        },
+        xdot_choice: "default".to_string(),
+        canonical: CanonicalPoint {
+            chit: 0.0,
+            gamma_AB: 0.0,
+            k_frust: false,
+            method: "test".to_string(),
+            extras: BTreeMap::new(),
+        },
+    };
+    TangentFlowField {
+        direction: Direction::Forward,
+        rule_at_origin: origin,
+        scaling: ScalingRule {
+            tau_obs_ref: f(&inputs["tau_obs_ref"]),
+            delta_chit: f(&inputs["delta_chit"]),
+            delta_gamma: f(&inputs["delta_gamma"]),
+            refinement,
+        },
+        description: None,
+    }
+}
+
+#[test]
+fn flow_matches_python_across_dispatch() {
+    let fixture = load_fixture();
+    for (i, case) in fixture["flow"].as_array().unwrap().iter().enumerate() {
+        let inputs = &case["inputs"];
+        let field = TranslationField::TangentFlow(build_tangent_flow_field(inputs));
+        let initial = CanonicalState {
+            chit: f(&inputs["chit_0"]),
+            gamma_AB: f(&inputs["gamma_AB_0"]),
+            k_frust: false,
+        };
+        let nu = f(&inputs["nu"]);
+        let out = flow(&initial, nu, &field).expect("flow dispatch should succeed");
+        // Branch budget: banach_exp / generic compose ≤ 2 libm calls per
+        // axis (LIBM); Caputo sums prony_terms.len() exp() calls
+        // sequentially (LIBM_WIDE for multi-term cases).
+        let budget = if inputs["refinement"]["prony_terms"]
+            .as_array()
+            .map(|a| a.len() > 1)
+            .unwrap_or(false)
+        {
+            LIBM_WIDE
+        } else {
+            LIBM
+        };
+        assert_close(
+            out.chit,
+            f(&case["outputs"]["chit"]),
+            budget,
+            &format!("flow[{i}].chit"),
+        );
+        assert_close(
+            out.gamma_AB,
+            f(&case["outputs"]["gamma_AB"]),
+            budget,
+            &format!("flow[{i}].gamma_AB"),
         );
     }
 }

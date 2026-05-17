@@ -7,11 +7,22 @@
 //! Module mapping (Python → Rust):
 //!   jax_core.py        → math.rs        (session 1: 12 primitives)
 //!   types.py           → types.rs       (session 3: dataclass shapes)
-//!   operations.py      → operations.rs  (future session)
+//!   gfdr_model.py      → gfdr_model.rs  (session 4)
+//!   sidecar.py         → sidecar.rs     (session 4)
+//!   flow.py            → flow.rs        (session 4)
+//!   operations.py      → operations.rs  (session 4: raw forward path only;
+//!                                        gradient / wrapped / intent /
+//!                                        posterior land in subsequent
+//!                                        sessions per BLOCK_IN §v6)
 //!   sensitivity.py     → sensitivity.rs (future session)
 //!   self_test.py       → self_test.rs   (future session)
 //!   streaming.py       → streaming.rs   (future session)
-//!   ...                → ...
+//!   validation.py      → validation.rs  (future session)
+//!   provenance.py      → provenance.rs  (future session)
 
+pub mod flow;
+pub mod gfdr_model;
 pub mod math;
+pub mod operations;
+pub mod sidecar;
 pub mod types;

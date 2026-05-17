@@ -218,6 +218,39 @@ Rust reads) is unproven at types.rs alone; it lands when the
 first module with actual JSON I/O ports (`sidecar.py` /
 `mcp_server.py`).
 
+gfdr_model.rs + sidecar.rs + flow.rs + operations.rs (session 4):
+the raw forward path. `gfdr_model.rs` mirrors `gfdr_model.py` 1:1
+(5 pure functions; `LocusPoint` / `EmpiricalRow` as the typed
+shapes of Python's `list[dict]`). `sidecar.rs` carries `round_key`
++ `lookup_inverse` + `lookup_forward`; the round function uses
+Rust's `round_ties_even` which agrees with Python `round`'s
+banker's-rounding for the bulk of inputs but diverges on
+`.x5`-decimal cases whose binary representation shifts off the
+exact halfway — documented in the module docstring as a
+cross-language wire-format caveat. `flow.rs` carries `flow()` with
+banach-exponential / generic / Caputo dispatch, returning
+`Result<CanonicalState, FlowError>` in lieu of Python's
+`NotImplementedError` / `ValueError`. `operations.rs` carries the
+raw forward path: `TranslationFieldIndex`, `apply_translation` +
+3 field-shape helpers, `forward_sweep_invert_grid` (Python
+`method="grid"` only; gradient dispatch lands session 5),
+`tau_obs_sweep_grid`, `regime_at`, `regime_display_band`, and
+`gamut_classify` (returns typed `GamutClassification` /
+`GamutDiagnosis` rather than Python's `dict`). Python's
+`score_fn` / `forward_map` callable kwargs surface as
+`Option<&dyn Fn(...)>` so callers can pass `None` cleanly.
+`default_substrate_score` iterates intersected keys in sorted
+(BTreeMap) order for deterministic float-sum across Rust runs;
+Python's hash-randomized set-iteration order is absorbed by
+`LIBM_WIDE = 16 ULPs` in the bit-identity tests. Bit-identity
+fixture extended from 12 to 20 primitives; **75/75 Rust tests**
+green (19 src unit + 21 bit-identity + 17 analytic math + 18
+types smoke). Session-2 fixture lesson kicked in twice: see the
+`sidecar_round_key` (drop `.x5`-decimal cases) and
+`gfdr_locus_residual` (synthetic empirical, not generator-seeded)
+comments in `emit_jax_core_reference.py`.
+
+
 ## What does NOT live here
 
 | Concern | Belongs to |
@@ -419,6 +452,41 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
     bit-identity + 17/17 analytic + 18/18 types smoke = 48/48
     total**; Python 392/392 still green; WASM build still clean.
     Next: port `operations.py`. Details in
+    [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
+  - *Session 4 (2026-05-16):* `operations.py` **raw forward path**
+    plus three small deps. Four new modules:
+    `rust/src/gfdr_model.rs` (5 pure functions: `vertex_regime`,
+    `alpha_s`, `plateau_height`, `generate_locus`, `interp_locus`,
+    `locus_residual`; `LocusPoint` + `EmpiricalRow` typed shapes),
+    `rust/src/sidecar.rs` (`round_key` via
+    `(x*10^n).round_ties_even()/10^n` matching Python for the bulk
+    of inputs; cross-language wire-format parity for sidecars
+    Python-emitted-Rust-consumed still deferred per BLOCK_IN),
+    `rust/src/flow.rs` (banach_exp / generic / Caputo dispatch
+    on the `serde_json::Value`-typed refinement map),
+    `rust/src/operations.rs` (raw forward path:
+    `TranslationFieldIndex`, `apply_translation` + 3 helpers,
+    `forward_sweep_invert_grid` — grid path only, gradient
+    dispatch lands session 5 — `tau_obs_sweep_grid`, `regime_at`,
+    `regime_display_band`, `gamut_classify` returning a typed
+    `GamutClassification`). `score_fn` / `forward_map` Python
+    kwargs surface as `Option<&dyn Fn(...)>`.
+    `default_substrate_score` sorts intersected keys (BTreeMap)
+    for deterministic float-sum; Python's hash-randomized
+    set iteration is covered by `LIBM_WIDE` in the bit-identity
+    tests. **75/75 Rust tests pass** (19 src unit + 21
+    bit-identity + 17 math + 18 types_smoke); Python 392/392
+    still green; WASM build still clean. Session-2 fixture
+    lesson load-bearing twice: `sidecar_round_key` fixture
+    excludes `.x5`-decimal inputs (Python `round` vs Rust
+    `round_ties_even` disagree off the exact binary halfway);
+    `gfdr_locus_residual` empirical rows are SYNTHETIC, not
+    generated from `gfdr_model.generate_locus`, to dodge the
+    candidate=truth cross-impl cancellation that collapses
+    Python's residual to exact 0 but leaves Rust's at ~5e-33.
+    Next: gradient inversion (`method="auto" / "gradient"` via a
+    native L-BFGS optimizer — session 5). Five-session
+    operations.py-port-completion breakdown lives in
     [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
 
 Each is its own session, sequenced by the user via

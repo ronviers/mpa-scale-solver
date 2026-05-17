@@ -187,6 +187,47 @@ mpa-conform's `import mpa_scale_solver` keeps working unchanged.
   exact 0, which is not a porting bug but does fail any ULP
   tolerance. Specify all `(candidate, target)` pairs explicitly
   so both implementations evaluate the same numerical inputs.
+- *Session 4 (2026-05-16):* Port operations.py's **raw forward path**
+  plus its three small dependencies. Four new Rust modules:
+  `rust/src/gfdr_model.rs` (5 pure functions ported from
+  `mpa_scale_solver/gfdr_model.py` — `vertex_regime`, `alpha_s`,
+  `plateau_height`, `generate_locus`, `interp_locus`, `locus_residual`;
+  `LocusPoint` + `EmpiricalRow` structs for the typed JS-port shapes),
+  `rust/src/sidecar.rs` (`round_key` via `(x*10^n).round_ties_even()/10^n`
+  matching Python's banker's rounding for the bulk of inputs;
+  `lookup_inverse` / `lookup_forward` as `BTreeMap<SidecarKey, _>::get`;
+  cross-language wire-format parity still deferred per the BLOCK_IN
+  rule), `rust/src/flow.rs` (`flow` dispatching banach_exponential /
+  generic / Caputo via `serde_json::Value`-typed refinement), and
+  `rust/src/operations.rs` carrying `TranslationFieldIndex` +
+  `apply_translation` + the three field-shape helpers +
+  `forward_sweep_invert_grid` (grid path only; method=auto/gradient
+  deferred to session 5) + `tau_obs_sweep_grid` + `regime_at` +
+  `regime_display_band` + `gamut_classify` (returns typed
+  `GamutClassification` / `GamutDiagnosis`, not a dict). `score_fn` /
+  `forward_map` callable kwargs surface as `Option<&dyn Fn(...)>` — no
+  type-parameter gymnastics at the call site. `default_substrate_score`
+  iterates intersected keys in sorted (BTreeMap) order so the float-sum
+  is deterministic across Rust runs; Python's hash-randomized set
+  iteration produces ULP-level divergence covered by `LIBM_WIDE` in the
+  bit-identity tests. Bit-identity infrastructure extended: 8 new
+  fixture entries in `emit_jax_core_reference.py` (`gfdr_alpha_s`,
+  `gfdr_plateau_height`, `gfdr_vertex_regime`, `gfdr_generate_locus`,
+  `gfdr_interp_locus`, `gfdr_locus_residual`, `sidecar_round_key`,
+  `flow`); 8 corresponding `#[test]` functions in `bit_identity.rs`;
+  coverage-guard list bumped from 12 to 20 primitives. Two design
+  lessons from session 2 paid off again: (1) `sidecar_round_key`
+  fixture excludes `.x5`-decimal inputs whose binary representation
+  shifts the value off the exact halfway (Python `round`'s dtoa path
+  and Rust's `round_ties_even` disagree there — documented in
+  `sidecar.rs` as a cross-language wire-format caveat); (2)
+  `gfdr_locus_residual` empirical rows are SYNTHETIC invented values,
+  NOT generated from `gfdr_model.generate_locus` — otherwise the
+  candidate=truth self-residual collapses to exact 0 in Python and
+  ~5e-33 in Rust (cross-impl libm cancellation), failing any ULP
+  budget. **75/75 Rust tests pass** (19 src unit + 21 bit-identity +
+  17 math + 18 types_smoke); Python 392/392 still green; `cargo build
+  --release --target wasm32-unknown-unknown` still clean.
 - *Session 3 (2026-05-16):* Port `types.py` → `rust/src/types.rs`.
   5 enums (`Direction`, `Gt`, `RegimeLabel`, `DisplayBand`,
   `DispatchPath`) plus `Activation` re-exported from `math`.
@@ -339,17 +380,50 @@ capability lands in v5 first via a v5.x release.
   schema-field name preservation are the two design decisions
   that will need to either match the future Python producer or
   trigger a Python-side renormalize before merging.
-- **Next porting target: `operations.py`.** 65 KB Python; carries
-  the seven wrapped variants, the `method` dispatch table for
-  `forward_sweep_invert`, the sidecar dispatch fast path, and the
-  five intent handlers. The bit-identity infrastructure extends
-  naturally — add per-operation fixture entries to the emitter,
-  add `#[test]` functions in `bit_identity.rs`. The coverage-guard
-  list in `bit_identity.rs` will need its expected-primitive list
-  extended. The lessons from session 2 (specify `(candidate,
-  target)` pairs explicitly; do not generate `target` from one
-  implementation) apply with extra weight here — operations.py
-  has many more chained primitives where libm cancellation matters.
+- **`operations.py` deferred-session split.** Session 4 landed the
+  raw forward path (`apply_translation` + three dispatch helpers,
+  `forward_sweep_invert_grid`, `tau_obs_sweep_grid`, `regime_at`,
+  `regime_display_band`, `gamut_classify`) plus the three small
+  deps (`gfdr_model`, `sidecar`, `flow`). The remaining
+  `operations.py` surface ports across four subsequent sessions,
+  each a coherent slice that ships its own bit-identity fixtures
+  and lands its own commit + tag:
+  - *Session 5 — gradient inversion.* `forward_sweep_invert`'s
+    `method` kwarg dispatch (`"auto"` / `"gradient"`):
+    `_invert_tangent_flow_closed_form` (already covered by
+    `math::tangent_flow_canonical_inverse` from session 1) plus
+    `_invert_learned_bfgs` via a native L-BFGS optimizer
+    (`argmin` is the BLOCK_IN-noted candidate). Tolerance choice
+    affects bit-identity budget on the learned-field MAP point;
+    document the chosen tolerance and verify against the v5 Python
+    on the `test_learned_field.py::TestForwardSweepInvertLearned`
+    recovery set.
+  - *Session 6 — intent algebra.* `intent_map` + `intent_compose`
+    + the five `_intent_iN` handlers + the helpers
+    (`_clamp_to_gamut`, `_nearest_in_gamut_chit_for_regime`,
+    `_capacity_class`, `_sign_preserving_clamp`). Surfaces typed
+    sacrifice-dict structs rather than `dict[str, Any]`.
+  - *Session 7 — validation + provenance + wrapped variants.*
+    Ports `validation.py` (492 LOC) and `provenance.py` (60 LOC),
+    then the eight `*_wrapped` operations stamping
+    `OperationOutput<T>` with `ValidationReport` + `Provenance`.
+    Threading discipline for `timestamp_ns` (Python uses
+    `time.time_ns()`) needs to be deterministic-replayable for
+    bit-identity to apply.
+  - *Session 8 — posterior.* `forward_sweep_invert_posterior` +
+    `_wrapped`. Depends on the Laplace primitives already in
+    `math.rs`; the wrapper builds a `Posterior` from a posterior
+    covariance + MAP point.
+  - *Session 9 — bindings.* `pyo3` + `wasm-bindgen`. This is the
+    one that makes v6 actually shippable — mpa-conform's
+    `import mpa_scale_solver` keeps working unchanged; mpa-auditor
+    gains a browser-side native solver.
+  The session-2 fixture lesson (specify `(candidate, target)`
+  pairs explicitly; never generate `target` from one impl and
+  test the other) was load-bearing again in session 4: see the
+  `gfdr_locus_residual` and `sidecar_round_key` comments in
+  `emit_jax_core_reference.py`. Expect at least one new instance
+  per future session.
 - L-BFGS implementation choice for the learned-field inversion path:
   v5 uses scipy's L-BFGS-B (well-tested, default tolerances). v6
   picks a native optimizer (Rust `argmin`, C++ `dlib` or
