@@ -672,10 +672,11 @@ capability lands in v5 first via a v5.x release.
      counts) never go through `f64` in the fixture. Store the
      underlying bits as a hex string and compare bytes directly.
   Adding `serde_json/float_roundtrip` is the wrong direction — it
-  papers over a fixture-design mistake at ~50 KB wasm cost. Future
-  cross-language parity tests (session 8 `Posterior`, eventual
-  `InverseLookupSidecar` parity) MUST follow these rules. The full
-  rule lives in the `bit_identity.rs` module docstring.
+  papers over a fixture-design mistake at ~50 KB wasm cost. Both
+  `InverseLookupSidecar` parity (session-7 followup) and `Posterior`
+  parity (session 8) followed these rules and landed clean. Future
+  cross-language parity tests MUST follow them; the full rule lives
+  in the `bit_identity.rs` module docstring.
 - **`operations.py` deferred-session split.** Session 4 landed the
   raw forward path (`apply_translation` + three dispatch helpers,
   `forward_sweep_invert_grid`, `tau_obs_sweep_grid`, `regime_at`,
@@ -816,8 +817,8 @@ capability lands in v5 first via a v5.x release.
    before adding any cross-language parity test.
 6. [`SIDECAR_FORMAT.md`](SIDECAR_FORMAT.md) — the authoritative
    sidecar wire-format spec at wire_version 1.0. Required reading
-   for session 9 (bindings); useful for session 8 (the posterior
-   wrapper takes a sidecar in the lookup-table path).
+   for session 9 (bindings — the pyo3 surface needs to round-trip
+   `InverseLookupSidecar` cleanly through the Python boundary).
 7. The relevant RFC-S sections + v9_receipts + cdv1_receipts entries.
 8. Prior version's release notes in
    [`../README.md`](../README.md)
