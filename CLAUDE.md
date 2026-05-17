@@ -250,6 +250,48 @@ types smoke). Session-2 fixture lesson kicked in twice: see the
 `gfdr_locus_residual` (synthetic empirical, not generator-seeded)
 comments in `emit_jax_core_reference.py`.
 
+optim.rs + operations.rs gradient dispatcher (session 5): the
+`forward_sweep_invert` `method` kwarg completes. New `optim.rs`
+carries `minimize_smooth_2d` — a hand-rolled 2D damped-Newton
+solver (numerical FD gradient + Hessian + backtracking line search;
+Hessian inversion via `math::inv_2x2` from session 1). Substitutes
+Python's `scipy.optimize.minimize(method="L-BFGS-B") + jax.grad`.
+**Deliberate divergence from the BLOCK_IN-noted `argmin` candidate:**
+the problem dimension is fixed at 2, BLOCK_IN §v6 session-5
+carves out non-byte-identity vs scipy (the optimizer just needs
+to converge to the same MAP within ~0.005 per axis from the
+grid-argmin warm start), and ~80 lines of hand-rolled code beats
+pulling `argmin + argmin-math` for the compile-time / WASM-size /
+API-surface cost. Newton converges in 2-3 outer iterations on a
+smooth near-quadratic cost (the identity-MLP case). `operations.rs`
+adds `Method::{Auto, Grid, Gradient}` enum + `InversionResult`
+struct (residuals optional; closed-form path skips the grid) +
+`forward_sweep_invert` dispatcher routing per Python's `method`
+kwarg semantics. New `OperationError::GradientOnLookupTable`
+mirrors Python's `ValueError`. Private helpers:
+`invert_tangent_flow_closed_form` wraps
+`math::tangent_flow_canonical_inverse` (session-1 bit-identity
+tested); `invert_learned_bfgs` hands the squared-residual cost
+to `optim::minimize_smooth_2d` warm-started from grid argmin.
+**Type-alias API fix (load-bearing for future module ports):**
+`ScoreFn` / `ForwardMap` type aliases are now documentation-only;
+public signatures inline `&dyn Fn(...)` directly. Reason:
+`type Alias = dyn Fn(...)` defaults to `dyn Fn(...) + 'static`,
+which locks callers to `'static` closures and blocks any closure
+that captures local state (e.g. the camera-test `forward_map`
+that captures a call counter). Inlining lets the trait-object
+lifetime default to the enclosing reference's lifetime per Rust
+reference §"Default trait object lifetimes". Apply the same
+inlining pattern to any future `&dyn Trait` parameter. **87/87
+Rust tests** green (31 src unit including 3 new optim + 9 new
+gradient-inversion + 21 bit-identity + 17 analytic math + 18
+types smoke). No new bit-identity fixtures — session 5 composes
+existing math primitives; cross-language verification against
+Python's `test_learned_field.py::TestForwardSweepInvertLearned`
+recovery set defers to the session that ports `cross_substrate.py`
+/ `active_learning.py` (they instantiate learned fields with
+materialized weights).
+
 
 ## What does NOT live here
 
@@ -487,6 +529,43 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
     Next: gradient inversion (`method="auto" / "gradient"` via a
     native L-BFGS optimizer — session 5). Five-session
     operations.py-port-completion breakdown lives in
+    [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
+  - *Session 5 (2026-05-16):* `forward_sweep_invert` **gradient
+    inversion dispatcher** lands. New `rust/src/optim.rs` carries
+    `minimize_smooth_2d` — a hand-rolled 2D damped-Newton solver
+    (numerical FD gradient + Hessian + backtracking line search;
+    Hessian inversion via `math::inv_2x2`). Substitutes Python's
+    `scipy.optimize.minimize(method="L-BFGS-B")` + `jax.grad`.
+    Deliberate divergence from the BLOCK_IN-noted `argmin` candidate
+    (justified at module-doc resolution): problem is 2D, BLOCK_IN
+    carves out non-byte-identity vs scipy, ~80 LOC beats the dep
+    footprint for compile-time / WASM-size / API-surface costs. New
+    `Method::{Auto, Grid, Gradient}` enum + `InversionResult` struct
+    (residuals optional — closed-form skips grid) +
+    `forward_sweep_invert` dispatcher in `operations.rs`. Closed-form
+    path wraps `math::tangent_flow_canonical_inverse` (session-1
+    bit-identity tested); L-BFGS-equivalent path warm-starts from
+    grid argmin. New `OperationError::GradientOnLookupTable` mirrors
+    Python's `ValueError`. **Type-alias API fix (forward-relevant):**
+    `ScoreFn` / `ForwardMap` aliases become documentation-only;
+    public signatures inline `&dyn Fn(...)` so the trait-object
+    lifetime defaults to the enclosing reference's, allowing local-
+    state closures (a `type Alias = dyn Trait` defaults to
+    `dyn Trait + 'static` which locks callers to `'static`). Apply
+    this inlining pattern to any future `&dyn Trait` parameter on the
+    Rust port. **87/87 Rust tests pass** (31 src unit including
+    3 new optim + 9 new gradient-inversion + 21 bit-identity + 17
+    math + 18 types_smoke); Python 392/392 still green; WASM build
+    still clean. No new bit-identity fixtures — session 5 composes
+    existing math primitives. Cross-language convergence vs Python's
+    `test_learned_field.py::TestForwardSweepInvertLearned` recovery
+    set deferred to whichever session ports `cross_substrate.py` /
+    `active_learning.py` (they instantiate learned fields with
+    materialized weights). BanachSubstrate-based test deferred —
+    `banach.py` belongs to the curator-path port in mpa-conform.
+    Wrapped-variant test deferred — wrapped variants land in session 7
+    with validation + provenance. Next per BLOCK_IN: session 6 —
+    intent algebra. Details in
     [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
 
 Each is its own session, sequenced by the user via

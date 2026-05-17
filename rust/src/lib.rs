@@ -24,5 +24,6 @@ pub mod flow;
 pub mod gfdr_model;
 pub mod math;
 pub mod operations;
+pub mod optim;
 pub mod sidecar;
 pub mod types;

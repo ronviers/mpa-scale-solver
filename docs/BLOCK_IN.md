@@ -54,7 +54,7 @@ always — refine in place).
 |---|---|---|
 | v1–v5 | Foundation, JAX, Bayesian, intents, Caputo, cross-substrate, active learning, MCP, LearnedField, streaming + DSL + notebook ergonomics, continuous self-test + sensitivity backprop + gradient inversion — all shipped 2026-05-16 (see README §Session Log) | — (shipped) |
 | ~~v2.2~~ | ~~N-mode generalization (cut c)~~ — cancelled 2026-05-16; tombstone retained below | — |
-| **v6** | One-shot native port (Rust or C++). Zero new features. Per-seed reproducibility against the v5 Python. | v5 |
+| **v6** | One-shot native port (Rust + WASM). Zero new features. Per-seed reproducibility against the v5 Python. Sessions 1-5 landed 2026-05-16 (math, types, raw forward path, gradient dispatcher); sessions 6-9 remaining (intents, validation+provenance+wrapped, posterior, bindings). | v5 |
 
 Sequencing is the user's call per ROADMAP. v6 is the only remaining
 version; the API surface and capability set are frozen as of v5.
@@ -265,6 +265,42 @@ mpa-conform's `import mpa_scale_solver` keeps working unchanged.
   remains deferred — it lands when the first module with actual
   JSON I/O ports (`sidecar.py` or `mcp_server.py`); `types.py`
   itself has no JSON producers in the Python.
+- *Session 5 (2026-05-16):* `forward_sweep_invert` **gradient
+  inversion dispatcher** completes the `operations.py` method-dispatch
+  surface (Python's `method="auto" / "grid" / "gradient"`). New
+  `rust/src/optim.rs` (`minimize_smooth_2d`): hand-rolled 2D damped-
+  Newton solver with numerical finite-difference gradient + Hessian
+  + backtracking line search; Hessian inversion via `math::inv_2x2`
+  from session 1. **Deliberate divergence from the BLOCK_IN-noted
+  `argmin` candidate** (sanctioned at session time): the problem is
+  2D, this BLOCK_IN explicitly carves out non-byte-identity vs scipy
+  (the optimizer just needs to converge to the same MAP within
+  ~0.005 per axis from the grid-argmin warm start), and ~80 LOC of
+  hand-rolled code beats pulling `argmin + argmin-math` for the
+  compile-time / WASM-size / API-surface costs on a 2D problem with
+  a smooth near-quadratic cost. Newton converges in 2-3 outer
+  iterations on the identity-MLP test. `operations.rs` adds
+  `Method::{Auto, Grid, Gradient}` enum + `InversionResult` struct
+  (residuals optional; closed-form skips grid) + `forward_sweep_invert`
+  dispatcher with the Python `method`-kwarg routing (`Auto` →
+  closed-form/L-BFGS-equivalent/grid per field shape; `Gradient`
+  errors on `LookupTable` via new `OperationError::GradientOnLookupTable`).
+  Closed-form path wraps `math::tangent_flow_canonical_inverse`
+  (session-1 bit-identity tested); L-BFGS-equivalent path warm-starts
+  from the grid argmin. **Type-alias API fix (forward-relevant):**
+  `ScoreFn` / `ForwardMap` aliases become documentation-only;
+  public signatures inline `&dyn Fn(...)` directly. Reason:
+  `type Alias = dyn Fn(...)` defaults to `dyn Fn(...) + 'static`,
+  locking callers to `'static` closures (and breaking the camera-test
+  `forward_map` capturing a call counter). Inlining lets the trait-
+  object lifetime default to the enclosing reference's per Rust
+  reference §"Default trait object lifetimes". Apply this inlining
+  pattern to any future `&dyn Trait` parameter on the Rust port.
+  **87/87 Rust tests pass** (31 src unit including 3 new optim +
+  9 new gradient-inversion + 21 bit-identity + 17 math + 18
+  types_smoke); Python 392/392 still green; `cargo build --release
+  --target wasm32-unknown-unknown` still clean. No new bit-identity
+  fixtures — session 5 composes existing math primitives.
 
 **Goal.** One-shot consolidation. Match the proven v5 Python under the
 per-seed reproducibility discipline. Free to parallelize aggressively
@@ -294,14 +330,15 @@ consumes).
   `field_parameter_sensitivity`, `inversion_sensitivity`, and
   the one-liner `driver_profile_loss_grad`. All compose
   `jax_core` / `jax_ops` primitives through the audit traversal.
-- **Gradient-based inversion** — `forward_sweep_invert`'s `method`
-  kwarg dispatch: `"auto"` (default) routes tangent_flow to
-  closed-form (`jax_core.tangent_flow_canonical_inverse`), learned
-  to L-BFGS, lookup_table to grid. The v5 Python uses scipy's
-  L-BFGS-B with `jax.grad` for the learned path; the v6 port
-  swaps to its native optimizer + autodiff (Rust: `argmin` + `enzyme`;
-  C++: `dlib` / hand-rolled + `autodiff`). The closed-form tangent_flow
-  path is pure arithmetic — direct port.
+- ~~**Gradient-based inversion**~~ — landed session 5 at
+  `rust/src/operations.rs` (`forward_sweep_invert` + `Method` enum)
+  and `rust/src/optim.rs` (`minimize_smooth_2d`). Closed-form
+  tangent_flow path wraps `math::tangent_flow_canonical_inverse`
+  (session-1 bit-identity tested). Learned-field path uses a hand-
+  rolled 2D damped-Newton solver (not `argmin`); see the session 5
+  log bullet for the deliberate-divergence rationale and the
+  Open/watch L-BFGS entry below for the cross-language convergence
+  defer.
 - Streaming + symbolic query + cross-substrate ops + active learning +
   Bayesian + Caputo + full intents (I1–I5) + composition.
 - MCP server (port via the native MCP SDK once one exists; or keep
@@ -315,10 +352,12 @@ are wrapper-shape only. Read jax_core first when porting; read
 operations.py for surface / dispatch behavior. The v5 additions
 that became part of the math surface: nothing new in `jax_core`
 itself (v5 only composed existing primitives in `sensitivity.py`);
-the `_invert_learned_bfgs` driver in `operations.py` is the one
-function whose Python form leaks into solver behavior — it uses
-scipy's BFGS, and the v6 port's choice of native optimizer must
-converge to the same `(chit, gamma_AB)` MAP within tolerance.
+the `_invert_learned_bfgs` driver in `operations.py` — the one
+function whose Python form was expected to leak into solver
+behavior — landed in session 5 as a hand-rolled 2D damped-Newton
+solver in `rust/src/optim.rs` (`minimize_smooth_2d`) rather than
+`argmin`. The convergence-vs-scipy MAP-match remains the cross-
+language acceptance bar; see Open/watch.
 
 **Zero additions.** If v6 needs a capability that isn't in v5, that
 capability lands in v5 first via a v5.x release.
@@ -384,28 +423,16 @@ capability lands in v5 first via a v5.x release.
   raw forward path (`apply_translation` + three dispatch helpers,
   `forward_sweep_invert_grid`, `tau_obs_sweep_grid`, `regime_at`,
   `regime_display_band`, `gamut_classify`) plus the three small
-  deps (`gfdr_model`, `sidecar`, `flow`). The remaining
-  `operations.py` surface ports across four subsequent sessions,
-  each a coherent slice that ships its own bit-identity fixtures
-  and lands its own commit + tag:
-  - *Session 5 — gradient inversion.* `forward_sweep_invert`'s
-    `method` kwarg dispatch (`"auto"` / `"gradient"`):
-    `_invert_tangent_flow_closed_form` (already covered by
-    `math::tangent_flow_canonical_inverse` from session 1) plus
-    `_invert_learned_bfgs` via a native L-BFGS optimizer
-    (`argmin` is the BLOCK_IN-noted candidate). **Practical
-    budget (verified 2026-05-16 by reading
-    `tests/test_gradient_inversion.py::TestLearnedFieldBFGS` +
-    `TestTangentFlowFieldAuto`):** the load-bearing tests assert
-    sub-grid recovery (chit / gamma axis error < 0.01 from truth
-    with a 0.25 grid step) plus closed-form exactness on
-    tangent-flow under `method="auto"` (residual = 0 to float64).
-    Neither test demands byte-identity with scipy's L-BFGS-B
-    convergence path — the Rust optimizer just needs to converge
-    to the same MAP within ~0.005 per axis on the identity-MLP
-    case. `ftol` / `gtol` chosen at session-5 time; scipy 1.17.0's
-    defaults (`ftol = 2.22e-9`, `gtol = 1e-5`) are the natural
-    starting point.
+  deps (`gfdr_model`, `sidecar`, `flow`). Session 5 landed the
+  gradient-inversion dispatcher. The remaining `operations.py`
+  surface ports across three subsequent sessions, each a coherent
+  slice that ships its own bit-identity fixtures and lands its
+  own commit + tag:
+  - ~~*Session 5 — gradient inversion.*~~ Landed 2026-05-16 as
+    v6.2.0 — see the §v6 session log bullet. `Method::{Auto, Grid,
+    Gradient}` + `InversionResult`; closed-form tangent_flow path +
+    hand-rolled 2D damped-Newton L-BFGS-equivalent (not `argmin` —
+    see the divergence rationale in the session-5 log bullet).
   - *Session 6 — intent algebra.* `intent_map` + `intent_compose`
     + the five `_intent_iN` handlers + the helpers
     (`_clamp_to_gamut`, `_nearest_in_gamut_chit_for_regime`,
@@ -417,7 +444,9 @@ capability lands in v5 first via a v5.x release.
     `OperationOutput<T>` with `ValidationReport` + `Provenance`.
     Threading discipline for `timestamp_ns` (Python uses
     `time.time_ns()`) needs to be deterministic-replayable for
-    bit-identity to apply.
+    bit-identity to apply. Also covers the wrapped `method` kwarg
+    forwarding (session 5 deferred the wrapped test; same
+    behavior, just stamps the OperationOutput).
   - *Session 8 — posterior.* `forward_sweep_invert_posterior` +
     `_wrapped`. Depends on the Laplace primitives already in
     `math.rs`; the wrapper builds a `Posterior` from a posterior
@@ -430,16 +459,23 @@ capability lands in v5 first via a v5.x release.
   pairs explicitly; never generate `target` from one impl and
   test the other) was load-bearing again in session 4: see the
   `gfdr_locus_residual` and `sidecar_round_key` comments in
-  `emit_jax_core_reference.py`. Expect at least one new instance
-  per future session.
-- L-BFGS implementation choice for the learned-field inversion path:
-  v5 uses scipy's L-BFGS-B (well-tested, default tolerances). v6
-  picks a native optimizer (Rust `argmin`, C++ `dlib` or
-  hand-rolled). Convergence tolerance choice affects bit-identity
-  budget on the learned-field MAP point; document the chosen
-  tolerance and verify against the v5 Python on the
-  `test_learned_field.py::TestForwardSweepInvertLearned` recovery
-  set.
+  `emit_jax_core_reference.py`. Session 5 added no new bit-identity
+  fixtures (composes existing primitives) so the lesson didn't fire,
+  but cross-language convergence against
+  `test_learned_field.py::TestForwardSweepInvertLearned` defers to
+  whichever session ports `cross_substrate.py` / `active_learning.py`
+  (they instantiate learned fields with materialized weights and
+  exercise the MAP). Expect at least one new instance of the
+  lesson per remaining session.
+- ~~L-BFGS implementation choice for the learned-field inversion
+  path.~~ Resolved session 5 — hand-rolled 2D damped-Newton solver
+  in `rust/src/optim.rs` (`minimize_smooth_2d`) substitutes scipy's
+  L-BFGS-B. Convergence tolerance: `FD_STEP = 1e-6`,
+  `GRAD_TOL = 1e-10`, `F_TOL = 1e-15`, `MAX_ITER = 50`,
+  `LINE_SEARCH_HALVINGS = 30`. Cross-language MAP-match verification
+  against Python's `test_learned_field.py::TestForwardSweepInvertLearned`
+  recovery set deferred to whichever session ports `cross_substrate.py`
+  / `active_learning.py` (per the operations.py-split note above).
 - Self-test cadence threading: v5 synchronous; v6 can run on a
   separate native thread per stream. The `BanachDriftReport` shape
   is plain-struct and thread-safe to pass; the cadence's call
