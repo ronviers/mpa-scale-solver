@@ -393,11 +393,19 @@ capability lands in v5 first via a v5.x release.
     `_invert_tangent_flow_closed_form` (already covered by
     `math::tangent_flow_canonical_inverse` from session 1) plus
     `_invert_learned_bfgs` via a native L-BFGS optimizer
-    (`argmin` is the BLOCK_IN-noted candidate). Tolerance choice
-    affects bit-identity budget on the learned-field MAP point;
-    document the chosen tolerance and verify against the v5 Python
-    on the `test_learned_field.py::TestForwardSweepInvertLearned`
-    recovery set.
+    (`argmin` is the BLOCK_IN-noted candidate). **Practical
+    budget (verified 2026-05-16 by reading
+    `tests/test_gradient_inversion.py::TestLearnedFieldBFGS` +
+    `TestTangentFlowFieldAuto`):** the load-bearing tests assert
+    sub-grid recovery (chit / gamma axis error < 0.01 from truth
+    with a 0.25 grid step) plus closed-form exactness on
+    tangent-flow under `method="auto"` (residual = 0 to float64).
+    Neither test demands byte-identity with scipy's L-BFGS-B
+    convergence path — the Rust optimizer just needs to converge
+    to the same MAP within ~0.005 per axis on the identity-MLP
+    case. `ftol` / `gtol` chosen at session-5 time; scipy 1.17.0's
+    defaults (`ftol = 2.22e-9`, `gtol = 1e-5`) are the natural
+    starting point.
   - *Session 6 — intent algebra.* `intent_map` + `intent_compose`
     + the five `_intent_iN` handlers + the helpers
     (`_clamp_to_gamut`, `_nearest_in_gamut_chit_for_regime`,
