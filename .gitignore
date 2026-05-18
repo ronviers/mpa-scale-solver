@@ -28,6 +28,10 @@ env/
 .DS_Store
 Thumbs.db
 
+# Rust
+rust/target/
+rust/pkg/
+
 # generated test output (PNGs, EXRs, per-frame JSON pre-fixture)
 tests/out/
 
