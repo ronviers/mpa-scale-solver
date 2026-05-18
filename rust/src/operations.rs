@@ -913,7 +913,7 @@ pub fn regime_display_band(regime: RegimeLabel) -> DisplayBand {
 
 /// One axis-level diagnosis emitted by `gamut_classify` when an axis is
 /// out of range.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GamutDiagnosis {
     pub axis: String,
     pub value: f64,
@@ -923,7 +923,7 @@ pub struct GamutDiagnosis {
 }
 
 /// Result of `gamut_classify`. `diagnoses` is empty iff `in_gamut`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GamutClassification {
     pub in_gamut: bool,
     pub diagnoses: Vec<GamutDiagnosis>,
@@ -1336,7 +1336,7 @@ fn intent_i5(
 /// Mirror of Python's `dict[str, Any]` with the three documented keys.
 /// `expected_substrate=None` means "auto-compute via `apply_translation`",
 /// matching Python's `entry.get("expected_substrate")` path.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ReferenceDatasetEntry {
     pub canonical_state: CanonicalState,
     pub tau_obs: f64,

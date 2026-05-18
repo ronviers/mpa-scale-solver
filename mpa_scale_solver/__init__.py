@@ -153,6 +153,42 @@ from .gfdr_model import (
 from . import jax_core, jax_ops, jax_pytree  # noqa: F401
 
 
+# ---------------------------------------------------------------------------
+# v6 — native (Rust) acceleration via `_mpa_scale_solver_native`.
+#
+# When the pyo3 wheel produced by `cd rust && maturin build --features
+# python` is installed, the 9 wrapped variants + raw
+# `validate_driver_profile` + `flow` re-bind here to thin Python shims
+# (see `_native_shim.py`) that route through the native module and
+# reconstruct the typed Python dataclasses on the way back. The pure-
+# Python implementations above remain the executable reference; the
+# shim's typed-dataclass return preserves the consumer surface
+# (`out.value.chit`, `out.provenance.dispatch_path ==
+# DispatchPath.DIRECT_COMPUTE`, etc.).
+#
+# Wire-level parity proven by `tests/test_rust_parity.py` across all
+# 9 wrapped variants + raw + flow.
+try:
+    from ._native_shim import (
+        apply_translation_wrapped,  # noqa: F811
+        flow,  # noqa: F811
+        forward_sweep_invert_posterior_wrapped,  # noqa: F811
+        forward_sweep_invert_wrapped,  # noqa: F811
+        gamut_classify_wrapped,  # noqa: F811
+        intent_compose_wrapped,  # noqa: F811
+        intent_map_wrapped,  # noqa: F811
+        regime_at_wrapped,  # noqa: F811
+        tau_obs_sweep_wrapped,  # noqa: F811
+        validate_driver_profile,  # noqa: F811
+        validate_driver_profile_wrapped,  # noqa: F811
+    )
+    NATIVE_AVAILABLE = True
+except ImportError:
+    # No native wheel installed for this platform / Python version —
+    # the pure-Python implementations imported above remain bound.
+    NATIVE_AVAILABLE = False
+
+
 __all__ = [
     "__version__",
     # types — v0

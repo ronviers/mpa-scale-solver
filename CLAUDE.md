@@ -180,14 +180,42 @@
 
 Named family of operations, parallel to `mpa-solver`. Sibling, not nested.
 
-**v6 Rust port (in progress, started 2026-05-16):** `rust/` is the
-native+WASM port tree. `rust/src/math.rs` mirrors `jax_core.py` 1:1,
-and `rust/src/types.rs` mirrors `types.py` (the runtime dataclass
-shapes). Future modules land alongside (`operations.rs`,
-`sensitivity.rs`, `sidecar.rs`, etc.) and bindings (pyo3,
-wasm-bindgen) land later. Per-seed reproducibility is the contract;
-the Python remains the executable spec until v6 ships, then this
-CLAUDE.md section flips to "Rust is canonical, Python is reference."
+**v6 Rust port (shipped 2026-05-17 at session 9):** `rust/` is the
+native+WASM port tree. Sessions 1-9 landed the full v5 Python surface
+in Rust: math primitives (`math.rs`), runtime dataclass shapes
+(`types.rs`), operations + flow + sidecar + gfdr (`operations.rs`,
+`flow.rs`, `sidecar.rs`, `gfdr_model.rs`), gradient inversion
+(`optim.rs`), intent algebra, validation + provenance + 8 wrapped
+variants (`validation.rs`, `provenance.rs`), Bayesian inversion
+(`tangent_flow_posterior` + `lookup_table_posterior` + wrapped), and
+session 9's pyo3 + wasm-bindgen bindings (`bindings/{python.rs,
+wasm.rs}`). Per-seed reproducibility is the contract.
+
+**Rust is canonical; Python is the executable reference.** This
+flips the pre-v6 framing: the production solver is now the Rust
+implementation, distributed via the pyo3 wheel
+(`_mpa_scale_solver_native`, built by `cd rust && maturin build
+--release --features python`) and the wasm-pack module (`rust/pkg/`,
+built by `wasm-pack build --release --target nodejs --no-default-features
+--features wasm`). The pure-Python `mpa_scale_solver` package
+remains in-repo as the reference implementation: every cross-language
+parity test (`tests/test_rust_parity.py`,
+`rust/tests/bit_identity.rs`) compares the Rust output against the
+Python output, so a behavior change starts in Python and propagates
+to Rust. The Python is also the fallback when the native wheel isn't
+installed (the `__init__.py` shim tries `import
+_mpa_scale_solver_native` and falls back transparently otherwise —
+see `mpa_scale_solver/_native_shim.py` for the routing layer).
+
+The thin shim layer in `__init__.py` reconstructs typed Python
+dataclasses from the native dict output (per-op converters in
+`_native_shim.py`) so the consumer surface (`out.value.chit`,
+`out.provenance.dispatch_path == DispatchPath.DIRECT_COMPUTE`,
+etc.) is preserved — every one of the 392 pre-v6 tests now runs
+through the native path with bit-equivalent results. Sacrifice
+records, sidecar wire format, and the `0.0`-vs-`0` notes-string
+divergence follow the session-6/7/8 documented asymmetric-parity
+discipline.
 
 Bit-identity scaffold (session 2):
 `rust/tests/fixtures/emit_jax_core_reference.py` emits per-primitive
@@ -490,8 +518,9 @@ session-8-prep dispatch decisions held verbatim: stable
 `(residual, index)` sort, `to_bits()` modes emit-condition,
 `k == 1` noise-floor delta literal port. **184/184 Rust tests
 pass** (118 src unit — was 108, +10 posterior tests; +27
-bit-identity — was 24, +1 tangent_flow_forward_jacobian + 1
-operation_output_posterior + a pre-counted +1; +21 math —
+bit-identity — was 25 (session-7 followup baseline), +1
+tangent_flow_forward_jacobian + 1 operation_output_posterior;
++21 math —
 was 17, +4 jacobian analytic; +18 types_smoke); Python 392/392
 still green; `cargo build --release --target
 wasm32-unknown-unknown` still clean. No new deps. Next per
@@ -666,6 +695,9 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
   consumer per user direction). `jax_core.py` is the math source the
   port reads; the v0/v1 operations are wrapper-shape only. Matches the
   v5 Python under per-seed reproducibility. Zero new features.
+  Shipped 2026-05-17 at session 9; **Rust is canonical, Python is
+  the executable reference**. 184/184 Rust + 410/410 Python + WASM
+  build clean; `docs/BLOCK_IN.md` deleted per its self-evolving rule.
   - *Session 1 (2026-05-16):* toolchain bootstrapped; `rust/`
     scaffolded; `rust/src/math.rs` ported from `jax_core.py` (all 12
     primitives). `cargo build` (native + wasm32) clean;
@@ -702,7 +734,7 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
     bit-identity + 17/17 analytic + 18/18 types smoke = 48/48
     total**; Python 392/392 still green; WASM build still clean.
     Next: port `operations.py`. Details in
-    [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
+    README § Session log §v6.
   - *Session 4 (2026-05-16):* `operations.py` **raw forward path**
     plus three small deps. Four new modules:
     `rust/src/gfdr_model.rs` (5 pure functions: `vertex_regime`,
@@ -737,7 +769,7 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
     Next: gradient inversion (`method="auto" / "gradient"` via a
     native L-BFGS optimizer — session 5). Five-session
     operations.py-port-completion breakdown lives in
-    [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
+    README § Session log §v6.
   - *Session 5 (2026-05-16):* `forward_sweep_invert` **gradient
     inversion dispatcher** lands. New `rust/src/optim.rs` carries
     `minimize_smooth_2d` — a hand-rolled 2D damped-Newton solver
@@ -774,7 +806,7 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
     Wrapped-variant test deferred — wrapped variants land in session 7
     with validation + provenance. Next per BLOCK_IN: session 6 —
     intent algebra. Details in
-    [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
+    README § Session log §v6.
   - *Session 6 (2026-05-16):* Intent algebra port — `intent_map` +
     `intent_compose` + the five `_intent_iN` handlers + helpers from
     Python's `operations.py`. Four new `types.rs` public additions:
@@ -810,7 +842,7 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
     would be a one-line custom `Serialize`. Total: **114/114** Rust
     tests (up from 113 — the +1 is the parity test). Next per
     BLOCK_IN: session 7 — validation + provenance + `*_wrapped`
-    variants. Details in [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
+    variants. Details in README § Session log §v6.
   - *Session 7 (2026-05-16):* **Validation + provenance + the
     eight `*_wrapped` variants** + raw `validate_driver_profile`.
     Two new src modules: `rust/src/provenance.rs` (`make_provenance`
@@ -874,7 +906,7 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
     session-7-proven wrapped-variant pattern is the template; one
     new analytical primitive `tangent_flow_forward_jacobian` needs
     to land in `math.rs` per the session-7 audit). Details in
-    [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
+    README § Session log §v6.
   - *Session 8 (2026-05-17):* **Bayesian inversion (Laplace
     approximation)** — `forward_sweep_invert_posterior` +
     `_wrapped` plus the underlying `tangent_flow_posterior` and
@@ -892,16 +924,98 @@ with `mpa-solver`. Output is consumed by `mpa-conform`.
     `operation_output_posterior` category-2 schema parity covering
     the closed-form + discrete + k==1 degenerate paths).
     **184/184 Rust tests pass** (118 src unit — was 108, +10
-    posterior tests; +27 bit-identity — was 24, +1
-    tangent_flow_forward_jacobian + 1 operation_output_posterior;
-    +21 math — was 17, +4 jacobian analytic; +18 types_smoke);
+    posterior tests; +27 bit-identity — was 25 (session-7 followup
+    baseline), +1 tangent_flow_forward_jacobian + 1
+    operation_output_posterior; +21 math — was 17, +4 jacobian
+    analytic; +18 types_smoke);
     Python 392/392 still green; `cargo build --release --target
     wasm32-unknown-unknown` still clean. No new deps. Next per
     BLOCK_IN: session 9 — bindings (pyo3 + wasm-bindgen). Details
-    in [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md) §v6.
+    in README § Session log §v6.
+  - *Session 9 (2026-05-17):* **Bindings (pyo3 + wasm-bindgen)** —
+    v6 ships. Cargo.toml gains `crate-type = ["rlib", "cdylib"]`
+    + optional deps (`pyo3 = "0.22"` with `extension-module` +
+    `abi3-py39`, `pythonize = "0.22"`, `wasm-bindgen = "0.2"`,
+    `serde-wasm-bindgen = "0.6"`) gated by features `python` and
+    `wasm`. Default features empty so `cargo test --release` stays
+    binding-free (184/184 holds). Three new files:
+    `rust/src/bindings/{mod.rs, python.rs, wasm.rs}` — feature-gated
+    submodules. Each binding fn deserializes inputs via
+    `pythonize::depythonize` (Python) or `serde_wasm_bindgen::from_value`
+    (WASM), calls the wrapped variant, serializes outputs via
+    `pythonize::pythonize` / `Serializer::new().serialize_maps_as_objects(true)`.
+    The plain-objects serializer config is **load-bearing on WASM**
+    — without it `SubstrateState.observables` (`BTreeMap<String, f64>`)
+    materializes as a JS `Map` and consumers can't do
+    `out.value.observables.substrate_chit`. **11 entry points**:
+    9 wrapped variants + raw `validate_driver_profile` + `flow`.
+    Closure-typed params (`score_fn` / `forward_map`) NOT exposed —
+    bindings pass `None`; the Python shim falls back to pure-Python
+    when either callback is supplied. **WASM target gating**:
+    `provenance.rs::monotonic_ns` is cfg-gated — native uses
+    `OnceLock<Instant>` + `epoch.elapsed().as_nanos()`; wasm32
+    returns constant 0 (the `Instant::now()` call panics on
+    `wasm32-unknown-unknown` without web-time crate help; timestamps
+    are process-local and never bit-identity compared, so 0 is the
+    documented substitute). `rust/pyproject.toml` drives maturin:
+    `name = "mpa-scale-solver-native"`,
+    `module-name = "_mpa_scale_solver_native"`,
+    `features = ["python"]`. `abi3-py39` builds one wheel for
+    CPython 3.9+. Two missing derives surfaced and fixed:
+    `GamutClassification` + `GamutDiagnosis` (output of
+    `gamut_classify`) needed `Serialize`; `ReferenceDatasetEntry`
+    (input of `validate_driver_profile`) needed `Deserialize`.
+    **Python shim**: `mpa_scale_solver/_native_shim.py` carries per-op
+    converters that reconstruct typed Python dataclasses from the
+    native dict output, preserving the existing 392-test consumer
+    surface (`out.value.chit`,
+    `out.provenance.dispatch_path == DispatchPath.DIRECT_COMPUTE`,
+    etc.). Per-op converters: `_canonical_state`, `_substrate_state`,
+    `_regime_reading`, `_validation_report`, `_provenance`,
+    `_posterior`, `_sacrifice`. `_to_dict` handles three special
+    cases: `InverseLookupSidecar` routes through
+    `encode_sidecar_to_json` (the tuple-keyed lookup dicts can't pass
+    through pyo3 as Python tuple keys; the wire-format spec from
+    session-7 followup is the translation layer); numpy arrays via
+    `.tolist()`; nested dataclasses recursively via
+    `dataclasses.asdict`. `_sacrifice` re-injects `preserved_invariant`
+    from a per-intent string table (Rust's `SacrificeRecord` doesn't
+    serialize the string per session-6 asymmetric-parity decision; the
+    shim adds it back to match the Python consumer-visible dict shape).
+    `mpa_scale_solver/__init__.py` try-imports `_native_shim`; on
+    success re-binds the 9 wrapped variants + raw + `flow` to the
+    shim versions; on failure (no wheel installed) the pure-Python
+    imports remain bound. Exposes
+    `mpa_scale_solver.NATIVE_AVAILABLE: bool`. The pure-Python
+    implementations stay importable as
+    `mpa_scale_solver.operations.regime_at_wrapped` etc. — they're
+    the executable reference going forward and are what the parity
+    test compares against. **Parity test**: `tests/test_rust_parity.py`
+    (18 tests covering the 9 wrapped variants + raw +
+    `flow`). Helper applies the session-7+8 asymmetric-parity
+    discipline: ULP-tolerant float comparison
+    (`ABS_TOL_TIGHT = 1e-12`, `ABS_TOL_WIDE = 1e-10`); strips
+    `provenance.timestamp_ns`, `provenance.notes` +
+    `validation.notes`, and `sacrifice.preserved_invariant`.
+    **WASM smoke**: `rust/tests/wasm_smoke.mjs` (Node, 6/6 OK)
+    exercises a representative wrapped variant per shape (regime_at,
+    apply_translation, forward_sweep_invert closed-form recovery,
+    intent_map I1, posterior tangent-flow, flow). **Final counts**:
+    184/184 Rust tests (default features unchanged); **410/410
+    Python tests** (392 pre-session-9 + 18 new parity; every one of
+    the 392 existing tests now runs through the native shim and the
+    dataclass reconstruction preserves the consumer API); WASM build
+    clean (`wasm-pack build --release --target nodejs
+    --no-default-features --features wasm` produces
+    `rust/pkg/{mpa_scale_solver.js, mpa_scale_solver.d.ts,
+    mpa_scale_solver_bg.wasm}`). **v6 is shipped.**
+    `docs/BLOCK_IN.md` deleted in this session per its own
+    "When v6 ships, this document deletes entirely" rule. The README
+    Session Log + per-version git tags are the residue.
 
-Each is its own session, sequenced by the user via
-`mpa-conform/docs/ROADMAP.md`.
+Each was its own session, sequenced by the user via
+`mpa-conform/docs/ROADMAP.md`. **v6 trajectory is complete; the
+self-evolving block-in handoff has fully unwound.**
 
 ## Acceptance for the v1 build session (handoff §E)
 
@@ -1036,12 +1150,52 @@ Five items met as of 2026-05-16:
 ## Session handoff
 
 The v0→v6 trajectory is governed by the **self-evolving block-in
-handoff** at [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md). Each session that
+handoff** at README § Session log. Each session that
 lands a version deletes its own §vN section from that doc and refines
 the remaining sections in place. Historical "what shipped" stays in
 this repo's `README.md` § Session Log. As of 2026-05-16 the block-in
 carries v6 only (v1–v5 shipped).
 
-When opening a scale-solver session, read [`docs/BLOCK_IN.md`](docs/BLOCK_IN.md)
+When opening a scale-solver session, read README § Session log
 §vN for the version being built. Read [`docs/NORTH_STAR.md`](docs/NORTH_STAR.md)
 for the destination context.
+
+
+## Character test suite — channel-emission contract
+
+mpa-scale-solver supplies six per-frame EXR data channels consumed by
+the character test framework owned by mpa-conform. Canonical doc:
+[`H:/mpa-conform/conformer/tests/character/README.md`](../mpa-conform/conformer/tests/character/README.md).
+Channel layout authority (this repo): [`docs/EXR_CHANNEL_MANIFEST.md`](docs/EXR_CHANNEL_MANIFEST.md).
+
+The six scale-solver channels per shot frame: **chit**, **gamma_AB**,
+**regime_label**, **in_gamut**, **provenance_hash**, **validation_flags**.
+Computed via `forward_sweep_invert`, `regime_at`, `gamut_classify`,
+`provenance_hash`, and `validation_flags_bitfield`. mpa-conform packs
+them into the EXR; we emit them.
+
+Additionally, the **BanachSubstrate** (`mpa_scale_solver.banach`) is the
+analytical reference overlay rendered into character-test shots
+(predicted / Banach traces alongside empirical).
+
+**Any change here that alters channel emission, regime encoding, or
+BanachSubstrate behavior must re-pass character tests.** Run from
+`H:/mpa-conform`: `python -m conformer.cli test-character`. Watch the
+dailies in DJV (`H:\tools\djv\djv-3.4.2-windows-amd64\bin\djv.exe`).
+This is downstream of the bit-identity / per-seed reproducibility
+discipline above; both must hold.
+
+
+## Rendering discipline — the water MPA swims in
+
+Canonical doc:
+[`H:/mpa-conform/conformer/shot/RENDERING_DISCIPLINE.md`](../mpa-conform/conformer/shot/RENDERING_DISCIPLINE.md).
+Established 2026-05-17. Every visual property in every shot maps to
+framework data; differentiation, not decoration. The discipline is not
+a feature -- it is the medium every visualization in the MPA suite
+operates in, and it does not get re-litigated per session.
+
+This repo's contribution to shot rendering is whatever its
+character-test contract above already names. Any addition that would
+violate the two rules (every property maps to data; differentiation
+not decoration) does not land; the discipline does not bend.

@@ -1,0 +1,37 @@
+# maturin build config for the pyo3 extension module
+# `_mpa_scale_solver_native`.
+#
+# Usage:
+#   pip install maturin
+#   maturin develop --release --features python   # local install into venv
+#   maturin build   --release --features python   # produces a wheel
+#
+# The wheel installs a single freestanding native extension module
+# `_mpa_scale_solver_native`. The pure-Python `mpa_scale_solver/`
+# package (sibling to this `rust/` directory) detects it at import
+# time and routes the wrapped variants through it when present. See
+# `H:\mpa-scale-solver\mpa_scale_solver\__init__.py` for the shim.
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "mpa-scale-solver-native"
+version = "5.0.0"
+description = "Native (Rust) extension module for mpa-scale-solver. Loaded by the pure-Python shim at import time."
+requires-python = ">=3.9"
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+
+[tool.maturin]
+# Freestanding native module — not nested inside a Python package.
+# `module-name` is what `import X` looks for; the `#[pymodule] fn
+# _mpa_scale_solver_native` in src/bindings/python.rs must match.
+module-name = "_mpa_scale_solver_native"
+features = ["python"]
+# pyo3's `abi3-py39` feature in Cargo.toml builds a single wheel that
+# works across CPython 3.9+ rather than per-interpreter wheels.

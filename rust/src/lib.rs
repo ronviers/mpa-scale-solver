@@ -41,3 +41,13 @@ pub mod provenance;
 pub mod sidecar;
 pub mod types;
 pub mod validation;
+
+// Session 9 — bindings (pyo3 + wasm-bindgen). Each submodule is gated on
+// its own feature flag so default builds (`cargo test --release`) stay
+// binding-free and the existing 184/184 regression suite is unaffected.
+// Dict-shape contract: callers pass Python dicts / JS objects, serde
+// deserializes into the Rust types, the wrapped variant runs, serde
+// serializes the OperationOutput<T> back. No per-T concrete wrappers —
+// the existing Serialize+Deserialize derives on types.rs do the work.
+#[cfg(any(feature = "python", feature = "wasm"))]
+pub mod bindings;

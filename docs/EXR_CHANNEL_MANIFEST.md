@@ -1,5 +1,25 @@
 # EXR channel manifest
 
+**Authoritative spec — EXR Channel Contract v1.**
+
+This document is the producer-side authority for the file-import boundary
+between the compute layer (`mpa-solver` + `mpa-scale-solver`, assembled by
+`mpa-conform`) and the rendering / viewer layer (`mpa-conform`'s
+`particle_renderer.py`, the future `mpa-auditor` WebGL port). It declares
+what channels appear in each per-frame EXR, who produces each channel,
+and what value range / encoding each carries.
+
+Consumers bind these channels to render properties via
+`mpa-conform/conformer/shot/RENDERING_DISCIPLINE.md` §"What this rules IN"
+and the executable spec `channel_to_emitter_params()` in
+`mpa-conform/conformer/shot/particle_renderer.py`.
+
+**Version-bump rule.** When this contract changes (channel added, encoding
+changed, semantic shift), the version stamp here bumps in **lockstep**
+with the consumer doc and the consumer function's docstring, in the same
+change. Silent drift between producer and consumer is the failure mode
+this versioning prevents.
+
 Per handoff §D.3. The per-camera-frame EXR is `mpa-conform`'s assembly,
 not this repo's emission. This document names what `mpa-scale-solver`
 contributes and what comes from upstream / downstream.
@@ -92,3 +112,36 @@ Renderers that prefer the three-bucket display banding call
   asymptotic_closure_compliant; bit 1: k_frust_invariant; bit 2:
   round_trip_residual present (operation actually computed a round
   trip).
+
+## Custom channels — experimental slots
+
+Six reserved slots let experimental framework data ride the EXR pipeline
+without bumping the contract version each iteration:
+
+| Channel | dtype | Convention |
+|---|---|---|
+| `custom_0` .. `custom_3` | float32 | per-frame scalar; producer names the meaning in its session handoff |
+| `custom_lut_0` | float32 array, length ≤ 256 | 1D look-up table; e.g., regime_label → color override, chit → altitude mapping |
+| `custom_lut_1` | float32 array, length ≤ 256 | second LUT slot |
+
+Custom slots are **not versioned** with the contract. A producer can
+populate `custom_0` with any framework-derived quantity (a tweak, an
+experiment, a graduation candidate) without bumping the contract version.
+Consumers treat unused / unpopulated slots as zeros.
+
+**Discipline carries.** Even a custom-slot channel must derive from
+framework data — `mpa-conform/conformer/shot/RENDERING_DISCIPLINE.md`
+applies identically here. "Make it look prettier" populates that don't
+trace to a framework quantity are decoration and forbidden.
+
+**Graduation.** When a custom slot proves load-bearing across multiple
+sessions, it graduates to a committed channel: bump the contract version,
+add the channel to the ownership table above, retire its custom slot,
+and bind it explicitly in the consumer mapping.
+
+**Custom slot tracking.** When a slot is in active experimental use,
+add a one-line entry below naming the producer, the framework quantity
+it carries, and the session that flagged it. Remove the entry when the
+slot is retired (graduated or abandoned).
+
+*Currently in use:* none.

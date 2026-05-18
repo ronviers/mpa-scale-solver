@@ -7,7 +7,15 @@ license = "MIT"
 
 [lib]
 name = "mpa_scale_solver"
-crate-type = ["rlib"]
+# rlib for `cargo test` and Rust consumers. cdylib for the pyo3 / wasm
+# bindings — neither is built unless the corresponding feature is on, so
+# `cargo build --release` (default features) emits only the rlib half.
+# A single crate covers both bindings because each is built in a separate
+# cargo invocation with a distinct target + feature set: pyo3 against
+# the native host triple with `--features python`, wasm-bindgen against
+# `wasm32-unknown-unknown` with `--features wasm`. The cdylib outputs
+# never collide.
+crate-type = ["rlib", "cdylib"]
 doctest = false  # math formulas in /// comments aren't runnable Rust
 
 [dependencies]
@@ -23,6 +31,26 @@ serde_json = "1"
 # Rust; substituting a different hash would break cross-language
 # provenance parity.
 blake2 = { version = "0.10", default-features = false }
+
+# Session 9 — bindings. Both deps are optional and gated by feature
+# flags so default builds stay binding-free.
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"], optional = true }
+pythonize = { version = "0.22", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+
+[features]
+default = []
+# Build the pyo3 extension module. Consumed by `maturin develop`
+# (see pyproject.toml). Produces `_mpa_scale_solver_native.pyd` on
+# Windows / `.so` on Linux. The pure-Python `mpa_scale_solver/__init__.py`
+# detects it at import time and routes the wrapped variants through it
+# when present.
+python = ["dep:pyo3", "dep:pythonize"]
+# Build the wasm-bindgen module. Consumed by `wasm-pack build`.
+# Produces `mpa_scale_solver_bg.wasm` + JS glue under `rust/pkg/`.
+# mpa-auditor consumes this output for browser-side native solving.
+wasm = ["dep:wasm-bindgen", "dep:serde-wasm-bindgen"]
 
 [profile.release]
 opt-level = 3

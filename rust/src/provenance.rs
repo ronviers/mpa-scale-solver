@@ -17,7 +17,9 @@
 //! `OnceLock` epoch). Timestamps are NOT bit-identity-comparable across
 //! runs; consumers comparing runs should ignore them.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
 use blake2::digest::{Update, VariableOutput};
@@ -38,14 +40,27 @@ pub const SOLVER_VERSION: &str = "5.0.0";
 /// `monotonic_ns` call. The absolute value of `timestamp_ns` is
 /// arbitrary; only the difference between two timestamps is meaningful,
 /// matching Python `time.monotonic_ns()`.
+#[cfg(not(target_arch = "wasm32"))]
 static EPOCH: OnceLock<Instant> = OnceLock::new();
 
+#[cfg(not(target_arch = "wasm32"))]
 fn monotonic_ns() -> i64 {
     let epoch = EPOCH.get_or_init(Instant::now);
     // `as_nanos` returns u128; cast to i64 saturating (the field is i64
     // to match Python's int range). Saturation is the documented choice
     // for processes that outlive 2^63 ns ≈ 292 years.
     epoch.elapsed().as_nanos().min(i64::MAX as u128) as i64
+}
+
+// `std::time::Instant::now()` panics on `wasm32-unknown-unknown` —
+// there is no monotonic clock without JS-side help (web-time crate,
+// performance.now() bindings, etc.). Timestamps are process-local
+// and never bit-identity compared: `provenance_hash` excludes them,
+// and the session-7+8 asymmetric-parity discipline excludes them at
+// the wire format. A constant 0 is the documented WASM substitute.
+#[cfg(target_arch = "wasm32")]
+fn monotonic_ns() -> i64 {
+    0
 }
 
 /// Stamp a `Provenance` for the current call.
