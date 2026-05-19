@@ -1,5 +1,9 @@
 # mpa-scale-solver — session discipline
 
+## Program-level discipline
+
+This repo is **framework runtime** per [`H:/mpa-central/METHODOLOGY.md`](../mpa-central/METHODOLOGY.md) Cut 4 — the seven canonical-frame operations the framework predicts behavior in. Output is Cut 2 evidence (clause b) when assembled by mpa-conform's curator path into declaration bundles.
+
 ## What lives here
 
 - The seven operations (`apply_translation`, `forward_sweep_invert`,
